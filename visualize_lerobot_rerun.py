@@ -17,6 +17,7 @@ import argparse
 import json
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,22 @@ import rerun.blueprint as rrb
 
 
 TIMELINE = "episode_time"
+DEFAULT_RERUN_PORT = 9876
+
+
+def choose_rerun_port(preferred: int = DEFAULT_RERUN_PORT) -> int:
+    """Use the preferred port when available, otherwise ask the OS for a free one."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+        try:
+            candidate.bind(("127.0.0.1", preferred))
+        except OSError:
+            pass
+        else:
+            return preferred
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        return int(candidate.getsockname()[1])
 
 
 def discover_datasets(root: Path) -> list[Path]:
@@ -362,7 +379,13 @@ def main() -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         recording.save(output)
     else:
-        recording.spawn()
+        rerun_port = choose_rerun_port()
+        if rerun_port != DEFAULT_RERUN_PORT:
+            print(
+                f"Rerun port {DEFAULT_RERUN_PORT} is occupied; "
+                f"using free port {rerun_port} instead."
+            )
+        recording.spawn(port=rerun_port)
 
     print(
         f"Loading {dataset.name}, episode {args.episode} "
