@@ -35,6 +35,7 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
+LIBERO/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -57,4 +58,5 @@ coverage.xml
 Thumbs.db
 
 # DIY
-lerobot_datasets
+w2_datasets
+visualizations
