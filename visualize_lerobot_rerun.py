@@ -14,6 +14,7 @@ compatible dataset, or shows an interactive menu if several are found.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +46,37 @@ ROBOT_EEF_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/eef"
 EEF_AXIS_LENGTH_METERS = 0.12
 ROBOT_FOOTPRINT_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/reference_frames/footprint"
 FOOTPRINT_AXIS_LENGTH_METERS = 1
+DEFAULT_CAMERA_HEIGHT = 480
+DEFAULT_CAMERA_WIDTH = 640
+CAMERA_BASE_FRAME = "footprint"
+CALIBRATED_CAMERAS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/calibrated_cameras"
 PIPER_GRIPPER_JOINT_NAMES = {
     *(f"fl_joint{index}" for index in (7, 8)),
     *(f"fr_joint{index}" for index in (7, 8)),
 }
+
+
+@dataclass(frozen=True)
+class CameraCalibration:
+    """One OpenCV camera calibrated relative to the robot base frame."""
+
+    feature_key: str
+    base_to_camera: np.ndarray
+    intrinsic: np.ndarray
+    height: int
+    width: int
+
+    @property
+    def camera_name(self) -> str:
+        return safe_entity_name(self.feature_key.rsplit(".", 1)[-1])
+
+    @property
+    def entity_path(self) -> str:
+        return f"{CALIBRATED_CAMERAS_ENTITY_PATH}/{self.camera_name}"
+
+    @property
+    def frame_name(self) -> str:
+        return f"calibrated_{self.camera_name}"
 
 
 def default_aloha_urdf(script_root: Path) -> Path:
@@ -126,6 +155,132 @@ def read_info(dataset: Path) -> dict[str, Any]:
             "this script currently expects the v3 layout."
         )
     return info
+
+
+def _read_calibration_matrices(path: Path) -> dict[str, dict[str, np.ndarray]]:
+    """Read the small matrix-only camera schema without requiring PyYAML."""
+    cameras: dict[str, dict[str, list[list[float]]]] = {}
+    in_cameras = False
+    current_camera: str | None = None
+    current_matrix: str | None = None
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise ValueError(f"Could not read camera calibration {path}: {error}") from error
+
+    for line_number, raw_line in enumerate(lines, start=1):
+        content = raw_line.split("#", 1)[0].rstrip()
+        if not content.strip():
+            continue
+        stripped = content.strip()
+        indent = len(content) - len(content.lstrip(" "))
+
+        if indent == 0:
+            in_cameras = stripped == "cameras:"
+            current_camera = None
+            current_matrix = None
+            continue
+        if not in_cameras:
+            continue
+        if indent == 2 and stripped.endswith(":"):
+            current_camera = stripped[:-1].strip().strip("'\"")
+            if not current_camera:
+                raise ValueError(f"Empty camera key at {path}:{line_number}")
+            cameras.setdefault(current_camera, {})
+            current_matrix = None
+            continue
+        if indent == 4 and stripped.endswith(":"):
+            matrix_name = stripped[:-1]
+            current_matrix = matrix_name if matrix_name in {"extrinsic", "intrinsic"} else None
+            if current_camera is not None and current_matrix is not None:
+                cameras[current_camera].setdefault(current_matrix, [])
+            continue
+        if (
+            indent >= 4
+            and stripped.startswith("- ")
+            and current_camera is not None
+            and current_matrix is not None
+        ):
+            try:
+                row = ast.literal_eval(stripped[2:].strip())
+                values = [float(value) for value in row]
+            except (SyntaxError, ValueError, TypeError) as error:
+                raise ValueError(
+                    f"Invalid {current_matrix} row at {path}:{line_number}"
+                ) from error
+            cameras[current_camera][current_matrix].append(values)
+
+    return {
+        camera_key: {
+            name: np.asarray(rows, dtype=np.float64)
+            for name, rows in matrices.items()
+        }
+        for camera_key, matrices in cameras.items()
+    }
+
+
+def load_camera_calibration(
+    path: Path,
+    feature_key: str | None,
+    height: int,
+    width: int,
+) -> CameraCalibration:
+    """Load and validate a base-to-camera OpenCV calibration."""
+    calibration_path = path.expanduser().resolve()
+    cameras = _read_calibration_matrices(calibration_path)
+    if feature_key is None:
+        if len(cameras) != 1:
+            choices = ", ".join(sorted(cameras)) or "none"
+            raise ValueError(
+                "Camera calibration must contain exactly one camera when "
+                f"--camera-feature is omitted; found: {choices}"
+            )
+        feature_key = next(iter(cameras))
+    if feature_key not in cameras:
+        choices = ", ".join(sorted(cameras)) or "none"
+        raise ValueError(
+            f"Camera {feature_key!r} is not in {calibration_path}; available: {choices}"
+        )
+    if height <= 0 or width <= 0:
+        raise ValueError("Camera resolution must contain positive HEIGHT and WIDTH")
+
+    matrices = cameras[feature_key]
+    missing = [name for name in ("extrinsic", "intrinsic") if name not in matrices]
+    if missing:
+        raise ValueError(
+            f"Camera {feature_key!r} is missing: {', '.join(missing)}"
+        )
+    base_to_camera = matrices["extrinsic"]
+    intrinsic = matrices["intrinsic"]
+    if base_to_camera.shape != (4, 4):
+        raise ValueError(
+            f"Camera extrinsic must be 4x4, got {base_to_camera.shape}"
+        )
+    if intrinsic.shape != (3, 3):
+        raise ValueError(f"Camera intrinsic must be 3x3, got {intrinsic.shape}")
+    if not np.all(np.isfinite(base_to_camera)) or not np.all(np.isfinite(intrinsic)):
+        raise ValueError("Camera calibration contains non-finite values")
+    if not np.allclose(base_to_camera[3], [0.0, 0.0, 0.0, 1.0], atol=1e-6):
+        raise ValueError("Camera extrinsic has an invalid homogeneous bottom row")
+
+    rotation = base_to_camera[:3, :3]
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-4):
+        raise ValueError("Camera extrinsic rotation is not orthonormal")
+    if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-4):
+        raise ValueError("Camera extrinsic rotation determinant is not +1")
+    if intrinsic[0, 0] <= 0.0 or intrinsic[1, 1] <= 0.0:
+        raise ValueError("Camera focal lengths must be positive")
+    if not np.allclose(intrinsic[2], [0.0, 0.0, 1.0], atol=1e-6):
+        raise ValueError("Camera intrinsic has an invalid homogeneous bottom row")
+
+    return CameraCalibration(
+        feature_key=feature_key,
+        base_to_camera=base_to_camera,
+        intrinsic=intrinsic,
+        height=height,
+        width=width,
+    )
 
 
 def read_episode(dataset: Path, episode_index: int) -> dict[str, Any]:
@@ -619,6 +774,50 @@ def log_robot_footprint_frame() -> None:
     )
 
 
+def log_calibrated_camera(calibration: CameraCalibration) -> None:
+    """Log a calibrated OpenCV pinhole attached to the robot root frame."""
+    # The YAML extrinsic maps base-frame points into OpenCV camera coordinates:
+    #     p_camera = T_camera_base @ p_base
+    # Rerun's ParentFromChild pose instead locates the camera in the base frame.
+    camera_to_base = np.linalg.inv(calibration.base_to_camera)
+    rr.log(
+        calibration.entity_path,
+        # Rerun 0.35 needs this explicit association when a named-frame
+        # pinhole entity is used as the origin of a Spatial2DView.
+        rr.CoordinateFrame(calibration.frame_name),
+        rr.Transform3D(
+            translation=camera_to_base[:3, 3],
+            mat3x3=camera_to_base[:3, :3],
+            relation=rr.TransformRelation.ParentFromChild,
+            parent_frame=CAMERA_BASE_FRAME,
+            child_frame=calibration.frame_name,
+        ),
+        rr.Pinhole(
+            image_from_camera=calibration.intrinsic,
+            resolution=[calibration.width, calibration.height],
+            camera_xyz=rr.ViewCoordinates.RDF,
+            image_plane_distance=0.15,
+            parent_frame=CAMERA_BASE_FRAME,
+            child_frame=calibration.frame_name,
+        ),
+        static=True,
+    )
+
+    position = camera_to_base[:3, 3]
+    vertical_fov = np.rad2deg(
+        2.0
+        * np.arctan(
+            calibration.height / (2.0 * float(calibration.intrinsic[1, 1]))
+        )
+    )
+    print(
+        f"Loaded calibrated camera: {calibration.feature_key} "
+        f"({calibration.height}x{calibration.width} HxW, "
+        f"position [{position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}] m, "
+        f"vertical FOV {vertical_fov:.2f} deg)"
+    )
+
+
 def log_piper_eef_poses(
     urdf_tree: Any,
     state_values: np.ndarray,
@@ -860,21 +1059,47 @@ def make_blueprint(
     video_views: list[tuple[str, str]],
     signal_views: list[tuple[str, str]],
     robot_replay: bool = False,
+    calibrated_camera: CameraCalibration | None = None,
 ) -> rrb.Blueprint:
     camera_views: list[Any] = [
         rrb.Spatial2DView(origin=path, name=name) for name, path in video_views
     ]
     if robot_replay:
         robot_view = rrb.Spatial3DView(origin=ROBOT_ENTITY_PATH, name="Robot replay")
+        robot_area: Any = robot_view
+        if calibrated_camera is not None:
+            calibrated_view = rrb.Spatial2DView(
+                # A pinhole at the 2D view origin projects all included 3D
+                # robot geometry using the logged intrinsics and extrinsics.
+                origin=calibrated_camera.entity_path,
+                # Do not include /cameras/** here: those video entities use
+                # implicit path frames and are intentionally disconnected
+                # from the robot's named ``footprint`` transform tree.
+                contents=[f"/{ROBOT_ENTITY_PATH}/**"],
+                name=(
+                    f"Main camera replay "
+                    f"({calibrated_camera.width}x{calibrated_camera.height})"
+                ),
+                visual_bounds=rrb.VisualBounds2D(
+                    x_range=[0.0, float(calibrated_camera.width)],
+                    y_range=[0.0, float(calibrated_camera.height)],
+                ),
+            )
+            robot_area = rrb.Tabs(
+                calibrated_view,
+                robot_view,
+                active_tab=0,
+                name="Robot replay",
+            )
         if camera_views:
             top_area: Any = rrb.Horizontal(
-                robot_view,
+                robot_area,
                 rrb.Grid(*camera_views, name="Cameras"),
                 column_shares=[1, 2],
                 name="Replay",
             )
         else:
-            top_area = robot_view
+            top_area = robot_area
     elif camera_views:
         top_area = rrb.Horizontal(*camera_views, name="Cameras")
     else:
@@ -955,6 +1180,29 @@ def parse_args() -> argparse.Namespace:
         help="Disable automatic URDF replay for compatible Piper datasets",
     )
     parser.add_argument(
+        "--camera-calibration",
+        type=Path,
+        help=(
+            "YAML calibration whose extrinsic maps robot-base points into the "
+            "OpenCV camera frame; adds a tracked camera-view robot replay"
+        ),
+    )
+    parser.add_argument(
+        "--camera-feature",
+        help=(
+            "Camera feature key inside --camera-calibration; inferred when the "
+            "YAML contains exactly one camera"
+        ),
+    )
+    parser.add_argument(
+        "--camera-resolution",
+        nargs=2,
+        type=int,
+        metavar=("HEIGHT", "WIDTH"),
+        default=(DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH),
+        help="Calibrated replay resolution in HxW order",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Write an .rrd recording instead of opening the Rerun viewer",
@@ -988,6 +1236,20 @@ def main() -> None:
     table = load_episode_data(dataset, info, episode)
     if not table.num_rows:
         raise SystemExit(f"Episode {args.episode} contains no frames")
+
+    calibrated_camera: CameraCalibration | None = None
+    if args.camera_calibration is not None:
+        if args.no_robot:
+            raise SystemExit("--camera-calibration cannot be used with --no-robot")
+        try:
+            calibrated_camera = load_camera_calibration(
+                args.camera_calibration,
+                args.camera_feature,
+                args.camera_resolution[0],
+                args.camera_resolution[1],
+            )
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
 
     timestamps = np.asarray(table["timestamp"].to_numpy(), dtype=np.float64)
     timestamps -= timestamps[0]
@@ -1031,7 +1293,20 @@ def main() -> None:
             recording,
             script_root,
         )
-        rr.send_blueprint(make_blueprint(video_views, signal_views, robot_replay))
+        if calibrated_camera is not None:
+            if not robot_replay:
+                raise SystemExit(
+                    "calibrated camera replay requires a compatible robot replay"
+                )
+            log_calibrated_camera(calibrated_camera)
+        rr.send_blueprint(
+            make_blueprint(
+                video_views,
+                signal_views,
+                robot_replay,
+                calibrated_camera,
+            )
+        )
         recording.flush()
 
     if args.output:

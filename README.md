@@ -14,6 +14,13 @@ conda run -n rerun python visualize_lerobot_rerun.py \
   --episode 0
 ```
 
+```bash
+conda run -n rerun python visualize_lerobot_rerun_v21.py \
+  --root lerobot_datasets_v2.1 \
+  --dataset table_clean \
+  --episode 0
+```
+
 默认模型为：
 `embodiments/aloha_new_description/urdf/aloha_tracer2_dabai_dark.urdf`。
 可视化进程会将 `embodiments/` 下同级的 ROS 软件包加入 `ROS_PACKAGE_PATH`，
@@ -24,6 +31,24 @@ conda run -n rerun python visualize_lerobot_rerun.py \
 多材质颜色，从而让装配和外观都与直接打开原始 URDF 的查看器保持一致。
 数据中的 `left_gripper` 和 `right_gripper` 表示两根指爪之间的总开度，单位为米；
 回放时会将总开度均分到两侧，使指爪保持原尺寸并沿横向对称开合。
+
+使用 `caliberations/w2_demo.yaml` 中的主相机标定，从固定主相机视角回放机器人：
+
+```bash
+conda run -n rerun python visualize_lerobot_rerun.py \
+  --root lerobot_datasets_v3.0/w2_datasets \
+  --dataset table_clean_lerobot \
+  --episode 0 \
+  --camera-calibration caliberations/w2_demo.yaml \
+  --camera-resolution 480 640
+```
+
+这里 YAML 的 `extrinsic` 按 `p_camera = T_camera_base @ p_base` 解释，即从机器人
+`footprint`（base）坐标系到 OpenCV 相机坐标系（X 向右、Y 向下、Z 向前）的刚体
+变换。脚本会自动求逆得到相机在 base 中的位姿。Rerun 首先打开
+`Main camera replay (640x480)` 标签页，并保留 `Robot replay` 自由视角供对照。
+`--camera-resolution` 的参数顺序是 `HEIGHT WIDTH`；YAML 只有一个相机时无需指定
+`--camera-feature`。
 
 常用选项：
 
