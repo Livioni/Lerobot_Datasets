@@ -40,6 +40,10 @@ PIPER_STATE_FEATURE = "observation.state"
 ROBOT_ENTITY_PATH = "robot"
 ROBOT_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/joint_transforms"
 ROBOT_STATIC_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/tf_static"
+ROBOT_EEF_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/eef"
+EEF_AXIS_LENGTH_METERS = 0.12
+ROBOT_FOOTPRINT_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/reference_frames/footprint"
+FOOTPRINT_AXIS_LENGTH_METERS = 1
 PIPER_GRIPPER_JOINT_NAMES = {
     *(f"fl_joint{index}" for index in (7, 8)),
     *(f"fr_joint{index}" for index in (7, 8)),
@@ -443,6 +447,269 @@ def gripper_finger_positions(
     return positive_position, -positive_position, was_clipped
 
 
+def rotation_matrix_from_rpy(rpy: tuple[float, float, float]) -> np.ndarray:
+    """Return the URDF fixed-axis roll/pitch/yaw rotation matrix."""
+    roll, pitch, yaw = rpy
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    return np.array(
+        [
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ],
+        dtype=np.float64,
+    )
+
+
+def rotation_matrix_from_axis_angle(
+    axis: tuple[float, float, float], angle: float
+) -> np.ndarray:
+    """Return a rotation matrix for a URDF revolute-joint motion."""
+    direction = np.asarray(axis, dtype=np.float64)
+    norm = np.linalg.norm(direction)
+    if norm == 0.0:
+        raise RuntimeError("A revolute URDF joint has a zero-length axis")
+    x, y, z = direction / norm
+    cosine = np.cos(angle)
+    sine = np.sin(angle)
+    complement = 1.0 - cosine
+    return np.array(
+        [
+            [
+                cosine + x * x * complement,
+                x * y * complement - z * sine,
+                x * z * complement + y * sine,
+            ],
+            [
+                y * x * complement + z * sine,
+                cosine + y * y * complement,
+                y * z * complement - x * sine,
+            ],
+            [
+                z * x * complement - y * sine,
+                z * y * complement + x * sine,
+                cosine + z * z * complement,
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+
+def urdf_joint_transform(joint: Any, value: float = 0.0) -> np.ndarray:
+    """Return one URDF parent-to-child transform at the requested joint value."""
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = rotation_matrix_from_rpy(joint.origin_rpy)
+    transform[:3, 3] = np.asarray(joint.origin_xyz, dtype=np.float64)
+
+    motion = np.eye(4, dtype=np.float64)
+    if joint.joint_type in ("revolute", "continuous"):
+        motion[:3, :3] = rotation_matrix_from_axis_angle(joint.axis, value)
+    elif joint.joint_type == "prismatic":
+        direction = np.asarray(joint.axis, dtype=np.float64)
+        norm = np.linalg.norm(direction)
+        if norm == 0.0:
+            raise RuntimeError(f"URDF joint {joint.name} has a zero-length axis")
+        motion[:3, 3] = direction / norm * value
+    elif joint.joint_type != "fixed":
+        raise RuntimeError(f"Unsupported URDF joint type {joint.joint_type!r}")
+    return transform @ motion
+
+
+def urdf_joint_chain(urdf_tree: Any, target_link: str) -> list[Any]:
+    """Return the ordered joint chain from the URDF root to ``target_link``."""
+    joints_by_child = {joint.child_link: joint for joint in urdf_tree.joints()}
+    root_link = urdf_tree.root_link().name
+    current_link = target_link
+    reversed_chain: list[Any] = []
+    visited: set[str] = set()
+    while current_link != root_link:
+        if current_link in visited:
+            raise RuntimeError(f"Cycle found in the URDF at link {current_link}")
+        visited.add(current_link)
+        joint = joints_by_child.get(current_link)
+        if joint is None:
+            raise RuntimeError(
+                f"URDF link {target_link} is not connected to root link {root_link}"
+            )
+        reversed_chain.append(joint)
+        current_link = joint.parent_link
+    return list(reversed(reversed_chain))
+
+
+def clamp_urdf_joint_value(joint: Any, value: float) -> float:
+    """Match the clamped joint motion used by the visible Rerun robot."""
+    lower = joint.limit_lower
+    upper = joint.limit_upper
+    if lower is not None:
+        value = max(value, float(lower))
+    if upper is not None:
+        value = min(value, float(upper))
+    return value
+
+
+def compute_link_pose_series(
+    urdf_tree: Any,
+    target_link: str,
+    joint_values: dict[str, np.ndarray],
+    frame_count: int,
+) -> np.ndarray:
+    """Compute root-frame poses for a URDF link over an episode."""
+    chain = urdf_joint_chain(urdf_tree, target_link)
+    poses = np.empty((frame_count, 4, 4), dtype=np.float64)
+    for frame_index in range(frame_count):
+        pose = np.eye(4, dtype=np.float64)
+        for joint in chain:
+            values = joint_values.get(joint.name)
+            value = 0.0 if values is None else float(values[frame_index])
+            value = clamp_urdf_joint_value(joint, value)
+            pose = pose @ urdf_joint_transform(joint, value)
+        poses[frame_index] = pose
+    return poses
+
+
+def rotation_matrix_to_rpy(rotation: np.ndarray) -> np.ndarray:
+    """Convert one rotation matrix to URDF-style roll/pitch/yaw radians."""
+    horizontal = np.hypot(rotation[0, 0], rotation[1, 0])
+    pitch = np.arctan2(-rotation[2, 0], horizontal)
+    if horizontal > 1e-8:
+        roll = np.arctan2(rotation[2, 1], rotation[2, 2])
+        yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+    else:
+        roll = np.arctan2(-rotation[1, 2], rotation[1, 1])
+        yaw = 0.0
+    return np.array([roll, pitch, yaw], dtype=np.float64)
+
+
+def log_robot_footprint_frame() -> None:
+    """Make the root frame used by the EEF pose labels visible in the 3D view."""
+    axis_length = FOOTPRINT_AXIS_LENGTH_METERS
+    rr.log(
+        ROBOT_FOOTPRINT_ENTITY_PATH,
+        rr.CoordinateFrame("footprint"),
+        static=True,
+    )
+    rr.log(
+        ROBOT_FOOTPRINT_ENTITY_PATH,
+        rr.Arrows3D(
+            origins=np.zeros((3, 3), dtype=np.float32),
+            vectors=np.eye(3, dtype=np.float32) * axis_length,
+            radii=[0.006] * 3,
+            colors=[
+                [255, 60, 60],
+                [60, 220, 80],
+                [70, 130, 255],
+            ],
+            labels=["X", "Y", "Z"],
+            show_labels=True,
+        ),
+        static=True,
+    )
+    rr.log(
+        ROBOT_FOOTPRINT_ENTITY_PATH,
+        rr.Points3D(
+            [[0.0, 0.0, 0.0]],
+            radii=[0.018],
+            colors=[[255, 255, 255]],
+            labels=["footprint\nEEF xyz/rpy reference"],
+            show_labels=True,
+        ),
+        static=True,
+    )
+
+
+def log_piper_eef_poses(
+    urdf_tree: Any,
+    state_values: np.ndarray,
+    state_indices: dict[str, int],
+    timestamps: np.ndarray,
+) -> None:
+    """Log animated left/right EEF axes and root-frame pose labels."""
+    time_column = rr.TimeColumn(TIMELINE, duration=timestamps)
+    frame_count = len(timestamps)
+    for dataset_side, urdf_prefix, color in (
+        ("left", "fl", [80, 200, 255]),
+        ("right", "fr", [255, 170, 70]),
+    ):
+        joint_values = {
+            f"{urdf_prefix}_joint{joint_index}": state_values[
+                :, state_indices[f"{dataset_side}_joint_{joint_index}"]
+            ]
+            for joint_index in range(1, 7)
+        }
+        poses = compute_link_pose_series(
+            urdf_tree,
+            f"{urdf_prefix}_link6",
+            joint_values,
+            frame_count,
+        )
+
+        # Both finger joints originate at the gripper center. Use their common
+        # origin as the EEF position while retaining the link6 orientation.
+        finger_origins = np.asarray(
+            [
+                urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}").origin_xyz
+                for joint_index in (7, 8)
+            ],
+            dtype=np.float64,
+        )
+        if not np.allclose(finger_origins[0], finger_origins[1]):
+            raise RuntimeError(
+                f"{dataset_side} gripper finger origins do not share an EEF center"
+            )
+        link_to_eef = np.eye(4, dtype=np.float64)
+        link_to_eef[:3, 3] = finger_origins[0]
+        poses = poses @ link_to_eef
+
+        translations = poses[:, :3, 3]
+        rotations = poses[:, :3, :3]
+        rpy_degrees = np.rad2deg(
+            np.asarray([rotation_matrix_to_rpy(rotation) for rotation in rotations])
+        )
+        side_label = "L" if dataset_side == "left" else "R"
+        labels = [
+            (
+                f"{side_label} EEF  xyz[m] "
+                f"{position[0]:+.3f} {position[1]:+.3f} {position[2]:+.3f}\n"
+                f"rpy[deg] {angles[0]:+.1f} {angles[1]:+.1f} {angles[2]:+.1f}"
+            )
+            for position, angles in zip(translations, rpy_degrees)
+        ]
+
+        entity_path = f"{ROBOT_EEF_ENTITY_PATH}/{dataset_side}"
+        eef_frame = f"{urdf_prefix}_eef"
+        rr.log(entity_path, rr.CoordinateFrame(eef_frame), static=True)
+        rr.log(
+            entity_path,
+            rr.Transform3D(
+                translation=finger_origins[0],
+                parent_frame=f"{urdf_prefix}_link6",
+                child_frame=eef_frame,
+            ),
+            static=True,
+        )
+        rr.log(entity_path, rr.TransformAxes3D(EEF_AXIS_LENGTH_METERS), static=True)
+        rr.log(
+            entity_path,
+            rr.Points3D(
+                [[0.0, 0.0, 0.0]],
+                radii=[0.012],
+                colors=[color],
+                show_labels=True,
+            ),
+            static=True,
+        )
+        rr.send_columns(
+            entity_path,
+            indexes=[time_column],
+            columns=rr.Points3D.columns(
+                positions=np.zeros((frame_count, 3), dtype=np.float32),
+                labels=labels,
+            ).partition(lengths=[1] * frame_count),
+        )
+
+
 def log_piper_robot_replay(
     table: pa.Table,
     timestamps: np.ndarray,
@@ -480,6 +747,8 @@ def log_piper_robot_replay(
         urdf_tree.log_urdf_to_recording(recording)
     except Exception as error:
         raise RuntimeError(f"Rerun could not log URDF {urdf_path}: {error}") from error
+
+    log_robot_footprint_frame()
 
     state_values = np.asarray(table[PIPER_STATE_FEATURE].to_pylist(), dtype=np.float64)
     if state_values.ndim != 2 or state_values.shape[0] != len(timestamps):
@@ -528,6 +797,8 @@ def log_piper_robot_replay(
         print(
             "Warning: negative gripper widths were clipped to a closed (0 m) gripper"
         )
+
+    log_piper_eef_poses(urdf_tree, state_values, state_indices, timestamps)
 
 
 def maybe_log_robot_replay(
