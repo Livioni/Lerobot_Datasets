@@ -58,8 +58,7 @@ LIBERO/
 Thumbs.db
 
 # DIY
-w2_datasets
 visualizations
-lerobot_datasets
-libero
 lerobot_datasets_v2.1
+lerobot_datasets_v3.0
+embodiments

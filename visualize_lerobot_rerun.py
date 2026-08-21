@@ -2,9 +2,9 @@
 """Visualize a local LeRobot v3 dataset with Rerun.
 
 Examples:
-    conda run -n rerun python visualize_lerobot_rerun.py
     conda run -n rerun python visualize_lerobot_rerun.py \
-        --dataset m2w-put-mongo-lerobot --episode 12
+        --root lerobot_datasets_v3.0/w2_datasets \
+        --dataset plug_in_socket_lerobot --episode 0
     conda run -n rerun python visualize_lerobot_rerun.py --list-datasets
 
 When ``--dataset`` is omitted, the script automatically selects the only
@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,25 @@ import rerun.blueprint as rrb
 
 TIMELINE = "episode_time"
 DEFAULT_RERUN_PORT = 9876
+PIPER_ROBOT_TYPE = "agilex_piper_bimanual"
+PIPER_STATE_FEATURE = "observation.state"
+ROBOT_ENTITY_PATH = "robot"
+ROBOT_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/joint_transforms"
+ROBOT_STATIC_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/tf_static"
+PIPER_GRIPPER_JOINT_NAMES = {
+    *(f"fl_joint{index}" for index in (7, 8)),
+    *(f"fr_joint{index}" for index in (7, 8)),
+}
+
+
+def default_aloha_urdf(script_root: Path) -> Path:
+    return (
+        script_root
+        / "embodiments"
+        / "aloha_new_description"
+        / "urdf"
+        / "aloha_tracer2_dabai_dark.urdf"
+    )
 
 
 def choose_rerun_port(preferred: int = DEFAULT_RERUN_PORT) -> int:
@@ -178,6 +199,17 @@ def feature_component_names(feature: dict[str, Any]) -> list[str]:
     return unique_names
 
 
+def raw_feature_component_names(feature: dict[str, Any]) -> list[str]:
+    """Return the original component names when they match the vector shape."""
+    shape = feature.get("shape", [])
+    if not shape:
+        return []
+    names = flatten_component_names(feature.get("names"))
+    if len(names) != int(shape[0]):
+        return []
+    return names
+
+
 def numeric_vector_features(info: dict[str, Any], table: pa.Table) -> list[str]:
     result: list[str] = []
     for key, feature in info.get("features", {}).items():
@@ -298,14 +330,284 @@ def log_videos(
     return views
 
 
+def piper_state_indices(
+    info: dict[str, Any], table: pa.Table
+) -> tuple[dict[str, int] | None, str | None]:
+    """Validate the Piper state schema and return component indexes by name."""
+    if info.get("robot_type") != PIPER_ROBOT_TYPE:
+        return None, f"robot_type is not {PIPER_ROBOT_TYPE}"
+    if PIPER_STATE_FEATURE not in table.column_names:
+        return None, f"{PIPER_STATE_FEATURE} is missing from episode data"
+
+    feature = info.get("features", {}).get(PIPER_STATE_FEATURE)
+    if not isinstance(feature, dict):
+        return None, f"{PIPER_STATE_FEATURE} metadata is missing"
+    names = raw_feature_component_names(feature)
+    if not names:
+        return None, f"{PIPER_STATE_FEATURE} component names do not match its shape"
+
+    required = [
+        *(f"left_joint_{index}" for index in range(1, 7)),
+        "left_gripper",
+        *(f"right_joint_{index}" for index in range(1, 7)),
+        "right_gripper",
+    ]
+    missing = [name for name in required if name not in names]
+    if missing:
+        return None, "missing state components: " + ", ".join(missing)
+    return {name: names.index(name) for name in required}, None
+
+
+def prepare_follower_visual_urdf(source: Path, destination: Path) -> None:
+    """Create a follower-only URDF while preserving the source mesh transforms."""
+    try:
+        tree = ET.parse(source)
+    except (ET.ParseError, OSError) as error:
+        raise RuntimeError(f"Could not parse URDF {source}: {error}") from error
+
+    root = tree.getroot()
+    for joint in root.findall("joint"):
+        if joint.get("name") not in PIPER_GRIPPER_JOINT_NAMES:
+            continue
+        origin = joint.find("origin")
+        axis = joint.find("axis")
+        if origin is None or axis is None:
+            continue
+
+        rpy = np.fromstring(origin.get("rpy", "0 0 0"), sep=" ")
+        direction = np.fromstring(axis.get("xyz", "1 0 0"), sep=" ")
+        if rpy.size != 3 or direction.size != 3:
+            raise RuntimeError(f"Invalid origin/axis on URDF joint {joint.get('name')}")
+
+        # Rerun 0.35 applies a prismatic axis directly in the parent frame,
+        # whereas URDF defines it in the rotated joint frame. Express the axis
+        # in the parent frame in this temporary copy so the fingers slide
+        # sideways instead of telescoping along the tool axis.
+        roll, pitch, yaw = rpy
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        rotation = np.array(
+            [
+                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                [-sp, cp * sr, cp * cr],
+            ]
+        )
+        parent_direction = rotation @ direction
+        axis.set("xyz", " ".join(f"{value:.12g}" for value in parent_direction))
+
+    for link in root.findall("link"):
+        for collision in list(link.findall("collision")):
+            link.remove(collision)
+        link_name = link.get("name", "")
+        if link_name.startswith(("bl_", "br_")):
+            for visual in list(link.findall("visual")):
+                link.remove(visual)
+            continue
+
+        for visual in link.findall("visual"):
+            mesh = visual.find("./geometry/mesh")
+            if mesh is None or not mesh.get("filename", "").lower().endswith(".dae"):
+                continue
+            # Rerun turns a URDF <material> into one Asset3D albedo factor,
+            # which masks every material embedded in a multi-material DAE.
+            # ColladaLoader-based viewers instead retain those embedded colors.
+            for material in list(visual.findall("material")):
+                visual.remove(material)
+
+    # Keep the original DAE references. They contain both the Collada node
+    # transforms that assemble each link and the original multi-material look.
+    tree.write(destination, encoding="utf-8", xml_declaration=True)
+
+
+def prepend_ros_package_path(package_root: Path) -> None:
+    """Make sibling ROS packages visible to Rerun's package URI resolver."""
+    root = str(package_root.resolve())
+    existing = [
+        path
+        for path in os.environ.get("ROS_PACKAGE_PATH", "").split(os.pathsep)
+        if path
+    ]
+    if root not in existing:
+        os.environ["ROS_PACKAGE_PATH"] = os.pathsep.join([root, *existing])
+
+
+def gripper_finger_positions(
+    gripper_width: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Convert a total opening width to the two opposing URDF finger positions."""
+    requested_position = np.asarray(gripper_width, dtype=np.float64) * 0.5
+    positive_position = np.maximum(requested_position, 0.0)
+    was_clipped = not np.allclose(positive_position, requested_position)
+    return positive_position, -positive_position, was_clipped
+
+
+def log_piper_robot_replay(
+    table: pa.Table,
+    timestamps: np.ndarray,
+    state_indices: dict[str, int],
+    urdf_path: Path,
+    temporary_directory: Path,
+    recording: rr.RecordingStream,
+    package_root: Path,
+) -> None:
+    """Log follower geometry and animated Piper joint transforms."""
+    prepend_ros_package_path(package_root)
+    prepared_urdf = temporary_directory / "aloha_follower_visual.urdf"
+    prepare_follower_visual_urdf(urdf_path, prepared_urdf)
+
+    try:
+        urdf_tree = rr.urdf.UrdfTree.from_file_path(
+            prepared_urdf,
+            entity_path_prefix=ROBOT_ENTITY_PATH,
+            static_transform_entity_path=ROBOT_STATIC_TRANSFORMS_ENTITY_PATH,
+        )
+    except Exception as error:
+        raise RuntimeError(f"Rerun could not load URDF {urdf_path}: {error}") from error
+
+    joint_names = [
+        *(f"fl_joint{index}" for index in range(1, 9)),
+        *(f"fr_joint{index}" for index in range(1, 9)),
+    ]
+    missing_joints = [
+        name for name in joint_names if urdf_tree.get_joint_by_name(name) is None
+    ]
+    if missing_joints:
+        raise RuntimeError("URDF is missing replay joints: " + ", ".join(missing_joints))
+
+    try:
+        urdf_tree.log_urdf_to_recording(recording)
+    except Exception as error:
+        raise RuntimeError(f"Rerun could not log URDF {urdf_path}: {error}") from error
+
+    state_values = np.asarray(table[PIPER_STATE_FEATURE].to_pylist(), dtype=np.float64)
+    if state_values.ndim != 2 or state_values.shape[0] != len(timestamps):
+        raise RuntimeError(
+            f"Unexpected {PIPER_STATE_FEATURE} shape {state_values.shape}; "
+            f"expected ({len(timestamps)}, components)"
+        )
+    if not np.all(np.isfinite(state_values)):
+        raise RuntimeError(f"{PIPER_STATE_FEATURE} contains non-finite values")
+
+    time_column = rr.TimeColumn(TIMELINE, duration=timestamps)
+    gripper_was_clipped = False
+    for dataset_side, urdf_prefix in (("left", "fl"), ("right", "fr")):
+        for joint_index in range(1, 7):
+            component = f"{dataset_side}_joint_{joint_index}"
+            joint = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}")
+            assert joint is not None
+            rr.send_columns(
+                ROBOT_TRANSFORMS_ENTITY_PATH,
+                indexes=[time_column],
+                columns=joint.compute_transform_columns(
+                    state_values[:, state_indices[component]], clamp=True
+                ),
+            )
+
+        gripper_width = state_values[:, state_indices[f"{dataset_side}_gripper"]]
+        positive_position, negative_position, was_clipped = gripper_finger_positions(
+            gripper_width
+        )
+        gripper_was_clipped = gripper_was_clipped or was_clipped
+        for joint_index, values in (
+            (7, positive_position),
+            (8, negative_position),
+        ):
+            joint = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}")
+            assert joint is not None
+            rr.send_columns(
+                ROBOT_TRANSFORMS_ENTITY_PATH,
+                indexes=[time_column],
+                # The state stores the complete finger-to-finger opening in meters.
+                # Do not clamp each half to the narrower limits in this visual URDF.
+                columns=joint.compute_transform_columns(values, clamp=False),
+            )
+
+    if gripper_was_clipped:
+        print(
+            "Warning: negative gripper widths were clipped to a closed (0 m) gripper"
+        )
+
+
+def maybe_log_robot_replay(
+    args: argparse.Namespace,
+    info: dict[str, Any],
+    table: pa.Table,
+    timestamps: np.ndarray,
+    temporary_directory: Path,
+    recording: rr.RecordingStream,
+    script_root: Path,
+) -> bool:
+    """Log an automatically detected or explicitly requested robot replay."""
+    if args.no_robot:
+        return False
+
+    explicit_urdf = args.urdf is not None
+    state_indices, incompatibility = piper_state_indices(info, table)
+    if incompatibility is not None or state_indices is None:
+        message = f"robot replay unavailable: {incompatibility}"
+        if explicit_urdf:
+            raise SystemExit(message)
+        print(f"Warning: {message}")
+        return False
+
+    urdf_path = (
+        args.urdf.expanduser().resolve()
+        if explicit_urdf
+        else default_aloha_urdf(script_root).resolve()
+    )
+    if not urdf_path.is_file():
+        message = f"robot replay URDF not found: {urdf_path}"
+        if explicit_urdf:
+            raise SystemExit(message)
+        print(f"Warning: {message}")
+        return False
+
+    package_root = script_root / "embodiments"
+    try:
+        log_piper_robot_replay(
+            table,
+            timestamps,
+            state_indices,
+            urdf_path,
+            temporary_directory,
+            recording,
+            package_root,
+        )
+    except RuntimeError as error:
+        if explicit_urdf:
+            raise SystemExit(str(error)) from error
+        print(f"Warning: robot replay unavailable: {error}")
+        return False
+
+    print(f"Loaded robot replay: {urdf_path}")
+    return True
+
+
 def make_blueprint(
-    video_views: list[tuple[str, str]], signal_views: list[tuple[str, str]]
+    video_views: list[tuple[str, str]],
+    signal_views: list[tuple[str, str]],
+    robot_replay: bool = False,
 ) -> rrb.Blueprint:
-    top_views: list[Any] = [
+    camera_views: list[Any] = [
         rrb.Spatial2DView(origin=path, name=name) for name, path in video_views
     ]
-    if not top_views:
-        top_views = [rrb.TextDocumentView(origin="episode_info", name="Episode")]
+    if robot_replay:
+        robot_view = rrb.Spatial3DView(origin=ROBOT_ENTITY_PATH, name="Robot replay")
+        if camera_views:
+            top_area: Any = rrb.Horizontal(
+                robot_view,
+                rrb.Grid(*camera_views, name="Cameras"),
+                column_shares=[1, 2],
+                name="Replay",
+            )
+        else:
+            top_area = robot_view
+    elif camera_views:
+        top_area = rrb.Horizontal(*camera_views, name="Cameras")
+    else:
+        top_area = rrb.TextDocumentView(origin="episode_info", name="Episode")
 
     plots: list[Any] = [
         rrb.TimeSeriesView(origin=path, name=name) for name, path in signal_views
@@ -322,7 +624,7 @@ def make_blueprint(
         column_shares=[1, 4],
     )
     layout = rrb.Vertical(
-        rrb.Horizontal(*top_views, name="Cameras"),
+        top_area,
         lower,
         row_shares=[2, 1],
     )
@@ -367,6 +669,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-video", action="store_true", help="Only load numeric signals"
     )
+    robot_group = parser.add_mutually_exclusive_group()
+    robot_group.add_argument(
+        "--urdf",
+        type=Path,
+        help=(
+            "Use this URDF for an eligible Piper replay instead of the default "
+            "embodiments/aloha_new_description model"
+        ),
+    )
+    robot_group.add_argument(
+        "--no-robot",
+        action="store_true",
+        help="Disable automatic URDF replay for compatible Piper datasets",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -380,6 +696,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    script_root = Path(__file__).resolve().parent
     root = args.root.expanduser().resolve()
     if args.list_datasets:
         datasets = discover_datasets(root)
@@ -430,10 +747,20 @@ def main() -> None:
     signal_views = log_signals(info, table, timestamps)
 
     with tempfile.TemporaryDirectory(prefix="lerobot-rerun-") as temporary:
+        temporary_directory = Path(temporary)
         video_views: list[tuple[str, str]] = []
         if not args.no_video:
-            video_views = log_videos(dataset, info, episode, Path(temporary))
-        rr.send_blueprint(make_blueprint(video_views, signal_views))
+            video_views = log_videos(dataset, info, episode, temporary_directory)
+        robot_replay = maybe_log_robot_replay(
+            args,
+            info,
+            table,
+            timestamps,
+            temporary_directory,
+            recording,
+            script_root,
+        )
+        rr.send_blueprint(make_blueprint(video_views, signal_views, robot_replay))
         recording.flush()
 
     if args.output:
