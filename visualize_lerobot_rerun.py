@@ -141,14 +141,49 @@ def safe_entity_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
 
 
+def flatten_component_names(value: Any) -> list[str]:
+    """Flatten both v3 name lists and legacy grouped name dictionaries."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        result: list[str] = []
+        for nested_value in value.values():
+            result.extend(flatten_component_names(nested_value))
+        return result
+    if isinstance(value, (list, tuple)):
+        result: list[str] = []
+        for nested_value in value:
+            result.extend(flatten_component_names(nested_value))
+        return result
+    return []
+
+
+def feature_component_names(feature: dict[str, Any]) -> list[str]:
+    """Return unique, entity-safe names for every component of a vector."""
+    shape = feature.get("shape", [])
+    if not shape:
+        return []
+
+    names = flatten_component_names(feature.get("names"))
+    if len(names) != int(shape[0]):
+        return []
+
+    unique_names: list[str] = []
+    occurrences: dict[str, int] = {}
+    for index, name in enumerate(names):
+        base_name = safe_entity_name(name) or f"component_{index}"
+        occurrences[base_name] = occurrences.get(base_name, 0) + 1
+        occurrence = occurrences[base_name]
+        unique_names.append(base_name if occurrence == 1 else f"{base_name}_{occurrence}")
+    return unique_names
+
+
 def numeric_vector_features(info: dict[str, Any], table: pa.Table) -> list[str]:
     result: list[str] = []
     for key, feature in info.get("features", {}).items():
         if key not in table.column_names or feature.get("dtype") == "video":
             continue
-        names = feature.get("names")
-        shape = feature.get("shape", [])
-        if names and shape and int(shape[0]) == len(names):
+        if feature_component_names(feature):
             result.append(key)
     return result
 
@@ -163,9 +198,9 @@ def log_signals(
         feature = info["features"][feature_key]
         values = np.asarray(table[feature_key].to_pylist(), dtype=np.float64)
         root = f"signals/{safe_entity_name(feature_key)}"
-        for column_index, column_name in enumerate(feature["names"]):
+        for column_index, column_name in enumerate(feature_component_names(feature)):
             rr.send_columns(
-                f"{root}/{safe_entity_name(column_name)}",
+                f"{root}/{column_name}",
                 indexes=[time_column],
                 columns=rr.Scalars.columns(scalars=values[:, column_index]),
             )

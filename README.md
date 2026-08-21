@@ -5,7 +5,7 @@
 
 ```bash
 conda run -n rerun python visualize_lerobot_rerun.py \
-  --dataset LIBERO/meta \
+  --dataset lerobot_datasets/plug_in_socket_lerobot \
   --episode 0
 ```
 
