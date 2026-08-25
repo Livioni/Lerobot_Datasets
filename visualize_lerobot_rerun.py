@@ -76,6 +76,11 @@ PIPER_GRIPPER_JOINT_NAMES = {
 # Arx5 gripper: both fingers get +width/2 (both limits are [0, upper]).
 PIPER_GRIPPER_SIGNS = (1.0, -1.0)
 ARX5_GRIPPER_SIGNS = (1.0, 1.0)
+# Geometric centroid of the inner fingertip contact face in the Arx5
+# link7/link8 mesh, expressed from either finger joint origin.  The two
+# fingers translate symmetrically, so their contact-center midpoint keeps this
+# fixed offset from the midpoint of the two joint origins.
+ARX5_FINGERTIP_CONTACT_OFFSET_METERS = (0.062765, 0.0, -0.000610)
 
 # Arx5 always uses the complete robot exterior. Camera DAEs with equivalent
 # lightweight meshes are replaced to keep Rerun responsive. box2_Link keeps
@@ -1743,8 +1748,9 @@ def log_piper_eef_poses(
     state_values: np.ndarray,
     state_indices: dict[str, int],
     timestamps: np.ndarray,
+    tcp_offset_from_finger_origins: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> None:
-    """Log animated left/right EEF (link6) and TCP (finger origin) poses."""
+    """Log animated left/right EEF (link6) and TCP poses."""
     time_column = rr.TimeColumn(TIMELINE, duration=timestamps)
     frame_count = len(timestamps)
     for dataset_side, urdf_prefix, color in (
@@ -1814,9 +1820,10 @@ def log_piper_eef_poses(
             ).partition(lengths=[1] * frame_count),
         )
 
-        # --- Log TCP (finger origin position) ---
-        # Both finger joints originate near the gripper center. Use their
-        # midpoint as the TCP position while retaining the link6 orientation.
+        # --- Log TCP (fingertip contact-center position) ---
+        # Both fingers translate symmetrically, so the midpoint between their
+        # contact faces is fixed relative to link6.  The profile-specific
+        # offset moves the old finger-joint midpoint to the contact surface.
         finger_origins = np.asarray(
             [
                 urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}").origin_xyz
@@ -1824,9 +1831,12 @@ def log_piper_eef_poses(
             ],
             dtype=np.float64,
         )
-        finger_midpoint = finger_origins.mean(axis=0)
+        tcp_translation = finger_origins.mean(axis=0) + np.asarray(
+            tcp_offset_from_finger_origins,
+            dtype=np.float64,
+        )
         link_to_tcp = np.eye(4, dtype=np.float64)
-        link_to_tcp[:3, 3] = finger_midpoint
+        link_to_tcp[:3, 3] = tcp_translation
         tcp_poses = link6_poses @ link_to_tcp
 
         tcp_translations = tcp_poses[:, :3, 3]
@@ -1836,7 +1846,7 @@ def log_piper_eef_poses(
         )
         tcp_labels = [
             (
-                f"{side_label} TCP  xyz[m] "
+                f"{side_label} TCP (fingertip contact center)  xyz[m] "
                 f"{position[0]:+.3f} {position[1]:+.3f} {position[2]:+.3f}\n"
                 f"rpy[deg] {angles[0]:+.1f} {angles[1]:+.1f} {angles[2]:+.1f}"
             )
@@ -1849,7 +1859,7 @@ def log_piper_eef_poses(
         rr.log(
             tcp_entity_path,
             rr.Transform3D(
-                translation=finger_midpoint,
+                translation=tcp_translation,
                 parent_frame=f"{urdf_prefix}_link6",
                 child_frame=tcp_frame,
             ),
@@ -1893,6 +1903,7 @@ def log_piper_robot_replay(
     box_overrides: Mapping[str, tuple[float, float, float]] | None = None,
     material_overrides: Mapping[str, tuple[float, float, float, float]] | None = None,
     gripper_mode: str = "width",
+    tcp_offset_from_finger_origins: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> None:
     """Log follower geometry and animated bimanual joint transforms.
 
@@ -2003,7 +2014,13 @@ def log_piper_robot_replay(
             "Warning: negative gripper widths were clipped to a closed (0 m) gripper"
         )
 
-    log_piper_eef_poses(urdf_tree, state_values, state_indices, timestamps)
+    log_piper_eef_poses(
+        urdf_tree,
+        state_values,
+        state_indices,
+        timestamps,
+        tcp_offset_from_finger_origins=tcp_offset_from_finger_origins,
+    )
 
 
 def maybe_log_robot_replay(
@@ -2063,6 +2080,7 @@ def maybe_log_robot_replay(
         material_overrides = ARX5_FULL_MATERIAL_OVERRIDES
         patch_dae = True
         gripper_mode = "normalized"
+        tcp_offset_from_finger_origins = ARX5_FINGERTIP_CONTACT_OFFSET_METERS
     else:
         package_root = script_root / "embodiments"
         gripper_signs = PIPER_GRIPPER_SIGNS
@@ -2074,6 +2092,7 @@ def maybe_log_robot_replay(
         box_overrides = {}
         material_overrides = {}
         gripper_mode = "width"
+        tcp_offset_from_finger_origins = (0.0, 0.0, 0.0)
 
     try:
         log_piper_robot_replay(
@@ -2093,6 +2112,7 @@ def maybe_log_robot_replay(
             box_overrides=box_overrides,
             material_overrides=material_overrides,
             gripper_mode=gripper_mode,
+            tcp_offset_from_finger_origins=tcp_offset_from_finger_origins,
         )
     except RuntimeError as error:
         if explicit_urdf:
