@@ -26,23 +26,26 @@ import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import rerun as rr
 import rerun.blueprint as rrb
+from PIL import Image, ImageStat
 
 
 TIMELINE = "episode_time"
 DEFAULT_RERUN_PORT = 9876
 PIPER_ROBOT_TYPE = "agilex_piper_bimanual"
+ARX5_ROBOT_TYPE = "unified_robot"
 PIPER_STATE_FEATURE = "observation.state"
 ROBOT_ENTITY_PATH = "robot"
 ROBOT_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/joint_transforms"
 ROBOT_STATIC_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/tf_static"
 ROBOT_EEF_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/eef"
+ROBOT_LINK6_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/link6"
 EEF_AXIS_LENGTH_METERS = 0.12
 ROBOT_FOOTPRINT_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/reference_frames/footprint"
 FOOTPRINT_AXIS_LENGTH_METERS = 1
@@ -53,6 +56,28 @@ CALIBRATED_CAMERAS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/calibrated_cameras"
 PIPER_GRIPPER_JOINT_NAMES = {
     *(f"fl_joint{index}" for index in (7, 8)),
     *(f"fr_joint{index}" for index in (7, 8)),
+}
+# Piper gripper: joint7 gets +width/2, joint8 gets -width/2 (opposing limits).
+# Arx5 gripper: both fingers get +width/2 (both limits are [0, upper]).
+PIPER_GRIPPER_SIGNS = (1.0, -1.0)
+ARX5_GRIPPER_SIGNS = (1.0, 1.0)
+
+# Arx5 always uses the complete robot exterior. Camera DAEs with equivalent
+# lightweight meshes are replaced to keep Rerun responsive. box2_Link keeps
+# its source DAE because its Collada node hierarchy assembles the upper chassis
+# and is not equivalent to the footprint-framed collision STL.
+ARX5_FULL_MESH_OVERRIDES = {
+    # These camera DAEs are roughly 40 MB each and have equivalent STLs.
+    "camera_link1": "aloha_maniskill_sim/meshes/camera_link1.STL",
+    "camera_link2": "aloha_maniskill_sim/meshes/camera_link2.STL",
+}
+ARX5_FORCE_SOLID_TEXTURE_LINKS = frozenset(
+    {"box2_Link", "left_camera", "right_camera"}
+)
+ARX5_FULL_MATERIAL_OVERRIDES = {
+    "camera_base_link": (0.18, 0.18, 0.20, 1.0),
+    "camera_link1": (0.08, 0.08, 0.09, 1.0),
+    "camera_link2": (0.08, 0.08, 0.09, 1.0),
 }
 
 
@@ -86,6 +111,16 @@ def default_aloha_urdf(script_root: Path) -> Path:
         / "aloha_new_description"
         / "urdf"
         / "aloha_tracer2_dabai_dark.urdf"
+    )
+
+
+def default_arx5_urdf(script_root: Path) -> Path:
+    return (
+        script_root
+        / "embodiments"
+        / "aloha-agilex"
+        / "urdf"
+        / "arx5_description_isaac.urdf"
     )
 
 
@@ -400,7 +435,11 @@ def log_signals(
 
 
 def extract_video_clip(
-    source: Path, destination: Path, start_seconds: float, duration_seconds: float
+    source: Path,
+    destination: Path,
+    start_seconds: float,
+    duration_seconds: float,
+    transcode: bool = False,
 ) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -418,13 +457,17 @@ def extract_video_clip(
         f"{duration_seconds:.9f}",
         "-map",
         "0:v:0",
-        "-c",
-        "copy",
         "-an",
         "-avoid_negative_ts",
         "make_zero",
-        str(destination),
     ]
+    if transcode:
+        # Re-encode formats Rerun cannot decode (e.g. hevc/gray12le depth
+        # videos) as h264/yuv420p so they can be loaded as AssetVideo.
+        command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18"])
+    else:
+        command.extend(["-c", "copy"])
+    command.append(str(destination))
     try:
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as error:
@@ -436,14 +479,17 @@ def log_videos(
     info: dict[str, Any],
     episode: dict[str, Any],
     temporary_directory: Path,
-) -> list[tuple[str, str]]:
-    views: list[tuple[str, str]] = []
+) -> list[tuple[str, str, bool]]:
+    """Return ``(display_name, entity_path, is_depth)`` for every video feature."""
+    views: list[tuple[str, str, bool]] = []
     video_keys = [
         key
         for key, feature in info.get("features", {}).items()
         if feature.get("dtype") == "video"
     ]
     for video_key in video_keys:
+        feature_info = info["features"][video_key].get("info", {})
+        is_depth = bool(feature_info.get("is_depth_map", False))
         metadata_prefix = f"videos/{video_key}"
         required = [
             f"{metadata_prefix}/chunk_index",
@@ -469,7 +515,7 @@ def log_videos(
         end = float(episode[f"{metadata_prefix}/to_timestamp"])
         camera_name = safe_entity_name(video_key.rsplit(".", 1)[-1])
         clip_path = temporary_directory / f"{camera_name}.mp4"
-        extract_video_clip(source, clip_path, start, end - start)
+        extract_video_clip(source, clip_path, start, end - start, transcode=is_depth)
 
         entity_path = f"cameras/{camera_name}"
         video_asset = rr.AssetVideo(path=clip_path)
@@ -485,7 +531,7 @@ def log_videos(
             ],
             columns=rr.VideoFrameReference.columns_nanos(frame_timestamps_ns),
         )
-        views.append((camera_name, entity_path))
+        views.append((camera_name, entity_path, is_depth))
     return views
 
 
@@ -517,14 +563,196 @@ def piper_state_indices(
     return {name: names.index(name) for name in required}, None
 
 
-def prepare_follower_visual_urdf(source: Path, destination: Path) -> None:
-    """Create a follower-only URDF while preserving the source mesh transforms."""
+def arx5_state_indices(
+    info: dict[str, Any], table: pa.Table
+) -> tuple[dict[str, int] | None, str | None]:
+    """Validate the Arx5/RoboTwin state schema and return component indexes by name.
+
+    The RoboTwin dataset stores 14 values per side pair:
+    ``left_joint_0..6`` (7) + ``right_joint_0..6`` (7), where ``joint_6``
+    is the gripper opening width.  These are mapped to the 1-indexed URDF
+    joint names (``fl_joint1..6`` arm + ``fl_joint7/8`` gripper) that the
+    replay function expects.
+    """
+    if info.get("robot_type") != ARX5_ROBOT_TYPE:
+        return None, f"robot_type is not {ARX5_ROBOT_TYPE}"
+    if PIPER_STATE_FEATURE not in table.column_names:
+        return None, f"{PIPER_STATE_FEATURE} is missing from episode data"
+
+    feature = info.get("features", {}).get(PIPER_STATE_FEATURE)
+    if not isinstance(feature, dict):
+        return None, f"{PIPER_STATE_FEATURE} metadata is missing"
+    names = raw_feature_component_names(feature)
+    if not names:
+        return None, f"{PIPER_STATE_FEATURE} component names do not match its shape"
+
+    required = [
+        *(f"left_joint_{index}" for index in range(7)),
+        *(f"right_joint_{index}" for index in range(7)),
+    ]
+    missing = [name for name in required if name not in names]
+    if missing:
+        return None, "missing state components: " + ", ".join(missing)
+
+    indices: dict[str, int] = {}
+    for side, offset in (("left", 0), ("right", 7)):
+        for joint_index in range(1, 7):
+            state_name = f"{side}_joint_{joint_index - 1}"
+            indices[f"{side}_joint_{joint_index}"] = names.index(state_name)
+        indices[f"{side}_gripper"] = names.index(f"{side}_joint_6")
+    return indices, None
+
+
+# Collada namespace used by Blender-exported DAE files.
+_COLLADA_NS = "http://www.collada.org/2005/11/COLLADASchema"
+
+
+def patch_dae_textures(
+    source_dae: Path,
+    output_dir: Path,
+    *,
+    force_solid_textures: bool = False,
+) -> Path:
+    """Make externally textured DAEs self-contained using their source colors.
+
+    Rerun's Collada loader expects ``<input semantic="TEXCOORD">`` on every
+    textured triangle set. Some Arx5 Blender exports reference a tiny material
+    color image without exporting UV data. Replace those invalid texture
+    references with the image's representative color. DAEs that do contain
+    texture coordinates are returned unchanged unless *force_solid_textures*
+    is set for a mesh whose external images Rerun cannot resolve from an RRD.
+    """
+    try:
+        tree = ET.parse(source_dae)
+    except (ET.ParseError, OSError) as error:
+        raise RuntimeError(f"Could not parse DAE {source_dae}: {error}") from error
+
+    root = tree.getroot()
+    ns = _COLLADA_NS
+    if not root.findall(f".//{{{ns}}}texture"):
+        return source_dae
+
+    has_texture_coordinates = any(
+        element.get("semantic") == "TEXCOORD"
+        for element in root.findall(f".//{{{ns}}}input")
+    )
+    if has_texture_coordinates and not force_solid_textures:
+        return source_dae
+
+    image_references: dict[str, str] = {}
+    for image in root.findall(f"{{{ns}}}library_images/{{{ns}}}image"):
+        init_from = image.find(f"{{{ns}}}init_from")
+        if image.get("id") and init_from is not None and init_from.text:
+            image_references[image.get("id", "")] = init_from.text.strip()
+
+    def texture_rgba(
+        profile: ET.Element, texture: ET.Element
+    ) -> tuple[float, float, float, float] | None:
+        """Resolve a Collada sampler chain and average its source image."""
+        parameters = {
+            parameter.get("sid", ""): parameter
+            for parameter in profile.findall(f"{{{ns}}}newparam")
+            if parameter.get("sid")
+        }
+        sampler = parameters.get(texture.get("texture", ""))
+        if sampler is None:
+            return None
+        surface_source = sampler.find(f"{{{ns}}}sampler2D/{{{ns}}}source")
+        if surface_source is None or not surface_source.text:
+            return None
+        surface = parameters.get(surface_source.text.strip())
+        if surface is None:
+            return None
+        image_source = surface.find(f"{{{ns}}}surface/{{{ns}}}init_from")
+        if image_source is None or not image_source.text:
+            return None
+        image_reference = image_references.get(image_source.text.strip())
+        if not image_reference:
+            return None
+        image_path = (source_dae.parent / image_reference).resolve()
+        try:
+            with Image.open(image_path) as image:
+                means = ImageStat.Stat(image.convert("RGBA")).mean
+        except (OSError, ValueError):
+            return None
+        if len(means) != 4:
+            return None
+        return tuple(float(value) / 255.0 for value in means)
+
+    for effect in root.findall(f"{{{ns}}}library_effects/{{{ns}}}effect"):
+        profile = effect.find(f"{{{ns}}}profile_COMMON")
+        if profile is None:
+            continue
+        for technique in profile.findall(f"{{{ns}}}technique"):
+            for shading in list(technique):
+                for channel in ("diffuse", "emission", "ambient", "specular"):
+                    channel_element = shading.find(f"{{{ns}}}{channel}")
+                    if channel_element is None:
+                        continue
+                    texture = channel_element.find(f"{{{ns}}}texture")
+                    if texture is None:
+                        continue
+                    rgba = texture_rgba(profile, texture)
+                    if rgba is None:
+                        rgba = (0.5, 0.5, 0.5, 1.0)
+                    if channel != "diffuse":
+                        rgba = (0.0, 0.0, 0.0, 1.0)
+                    channel_element.remove(texture)
+                    color = ET.SubElement(
+                        channel_element,
+                        f"{{{ns}}}color",
+                        {"sid": channel},
+                    )
+                    color.text = " ".join(f"{value:.6g}" for value in rgba)
+        for newparam in list(profile.findall(f"{{{ns}}}newparam")):
+            if (
+                newparam.find(f"{{{ns}}}surface") is not None
+                or newparam.find(f"{{{ns}}}sampler2D") is not None
+            ):
+                profile.remove(newparam)
+
+    for images in root.findall(f"{{{ns}}}library_images"):
+        root.remove(images)
+
+    # Collada importers generally expect the schema as the document's default
+    # namespace. ElementTree otherwise serializes it as an ``ns0:`` prefix,
+    # which makes Assimp (and some Rerun builds) treat a valid file as empty.
+    ET.register_namespace("", ns)
+    output_path = output_dir / source_dae.name
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    return output_path
+
+
+def prepare_follower_visual_urdf(
+    source: Path,
+    destination: Path,
+    strip_prefixes: tuple[str, ...] = ("bl_", "br_"),
+    strip_link_names: frozenset[str] = frozenset(),
+    patch_dae: bool = False,
+    mesh_overrides: Mapping[str, str] | None = None,
+    force_solid_texture_links: frozenset[str] = frozenset(),
+    box_overrides: Mapping[str, tuple[float, float, float]] | None = None,
+    material_overrides: Mapping[str, tuple[float, float, float, float]] | None = None,
+) -> None:
+    """Create a follower-only URDF while preserving the source mesh transforms.
+
+    Visuals are stripped from links whose names start with any prefix in
+    *strip_prefixes* or match an entry in *strip_link_names*.  Collision
+    geometry is always removed.  When *patch_dae* is true, ``.dae`` meshes
+    whose textures lack UV coordinates are copied to a temp directory with a
+    representative solid-color material. *force_solid_texture_links* applies
+    the same self-contained conversion even when UVs exist. Optional overrides
+    replace oversized full-profile assets with lightweight meshes or primitives.
+    """
     try:
         tree = ET.parse(source)
     except (ET.ParseError, OSError) as error:
         raise RuntimeError(f"Could not parse URDF {source}: {error}") from error
 
     root = tree.getroot()
+    mesh_overrides = mesh_overrides or {}
+    box_overrides = box_overrides or {}
+    material_overrides = material_overrides or {}
     for joint in root.findall("joint"):
         if joint.get("name") not in PIPER_GRIPPER_JOINT_NAMES:
             continue
@@ -560,20 +788,86 @@ def prepare_follower_visual_urdf(source: Path, destination: Path) -> None:
         for collision in list(link.findall("collision")):
             link.remove(collision)
         link_name = link.get("name", "")
-        if link_name.startswith(("bl_", "br_")):
+        if link_name.startswith(strip_prefixes) or link_name in strip_link_names:
             for visual in list(link.findall("visual")):
                 link.remove(visual)
             continue
 
         for visual in link.findall("visual"):
-            mesh = visual.find("./geometry/mesh")
-            if mesh is None or not mesh.get("filename", "").lower().endswith(".dae"):
+            geometry = visual.find("geometry")
+            if geometry is None:
                 continue
-            # Rerun turns a URDF <material> into one Asset3D albedo factor,
-            # which masks every material embedded in a multi-material DAE.
-            # ColladaLoader-based viewers instead retain those embedded colors.
-            for material in list(visual.findall("material")):
-                visual.remove(material)
+            if link_name in mesh_overrides:
+                for child in list(geometry):
+                    geometry.remove(child)
+                override_path = Path(mesh_overrides[link_name])
+                if not override_path.is_absolute():
+                    override_path = source.parent / override_path
+                ET.SubElement(
+                    geometry,
+                    "mesh",
+                    {"filename": str(override_path.resolve())},
+                )
+            elif link_name in box_overrides:
+                for child in list(geometry):
+                    geometry.remove(child)
+                ET.SubElement(
+                    geometry,
+                    "box",
+                    {
+                        "size": " ".join(
+                            f"{value:.6g}" for value in box_overrides[link_name]
+                        )
+                    },
+                )
+
+            mesh = visual.find("./geometry/mesh")
+            filename = ""
+            if mesh is not None:
+                filename = mesh.get("filename", "")
+                # Convert bare relative mesh paths to absolute so Rerun can
+                # resolve them from the temp URDF copy. ``package://`` URIs
+                # are left untouched for ROS_PACKAGE_PATH resolution.
+                if filename and not filename.startswith(("package://", "/")):
+                    mesh.set("filename", str((source.parent / filename).resolve()))
+                    filename = mesh.get("filename", "")
+                # Make invalid or explicitly selected external textures
+                # self-contained before the temporary URDF is logged.
+                if patch_dae and filename.lower().endswith(".dae"):
+                    abs_path = Path(filename)
+                    if abs_path.is_file():
+                        patched = patch_dae_textures(
+                            abs_path,
+                            destination.parent,
+                            force_solid_textures=(
+                                link_name in force_solid_texture_links
+                            ),
+                        )
+                        mesh.set("filename", str(patched.resolve()))
+                        filename = mesh.get("filename", "")
+                if filename.lower().endswith(".dae"):
+                    # A URDF-wide albedo masks embedded multi-material colors.
+                    for material in list(visual.findall("material")):
+                        visual.remove(material)
+
+            if link_name in material_overrides:
+                for material in list(visual.findall("material")):
+                    visual.remove(material)
+                material = ET.SubElement(
+                    visual,
+                    "material",
+                    {"name": f"{link_name}_rerun_material"},
+                )
+                ET.SubElement(
+                    material,
+                    "color",
+                    {
+                        "rgba": " ".join(
+                            f"{value:.6g}"
+                            for value in material_overrides[link_name]
+                        )
+                    },
+                )
 
     # Keep the original DAE references. They contain both the Collada node
     # transforms that assemble each link and the original multi-material look.
@@ -824,7 +1118,7 @@ def log_piper_eef_poses(
     state_indices: dict[str, int],
     timestamps: np.ndarray,
 ) -> None:
-    """Log animated left/right EEF axes and root-frame pose labels."""
+    """Log animated left/right EEF (link6) and TCP (finger origin) poses."""
     time_column = rr.TimeColumn(TIMELINE, duration=timestamps)
     frame_count = len(timestamps)
     for dataset_side, urdf_prefix, color in (
@@ -837,60 +1131,46 @@ def log_piper_eef_poses(
             ]
             for joint_index in range(1, 7)
         }
-        poses = compute_link_pose_series(
+        link6_poses = compute_link_pose_series(
             urdf_tree,
             f"{urdf_prefix}_link6",
             joint_values,
             frame_count,
         )
 
-        # Both finger joints originate at the gripper center. Use their common
-        # origin as the EEF position while retaining the link6 orientation.
-        finger_origins = np.asarray(
-            [
-                urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}").origin_xyz
-                for joint_index in (7, 8)
-            ],
-            dtype=np.float64,
-        )
-        if not np.allclose(finger_origins[0], finger_origins[1]):
-            raise RuntimeError(
-                f"{dataset_side} gripper finger origins do not share an EEF center"
-            )
-        link_to_eef = np.eye(4, dtype=np.float64)
-        link_to_eef[:3, 3] = finger_origins[0]
-        poses = poses @ link_to_eef
-
-        translations = poses[:, :3, 3]
-        rotations = poses[:, :3, :3]
-        rpy_degrees = np.rad2deg(
-            np.asarray([rotation_matrix_to_rpy(rotation) for rotation in rotations])
-        )
         side_label = "L" if dataset_side == "left" else "R"
-        labels = [
+
+        # --- Log actual EEF (link6 position) ---
+        link6_translations = link6_poses[:, :3, 3]
+        link6_rotations = link6_poses[:, :3, :3]
+        link6_rpy_degrees = np.rad2deg(
+            np.asarray([rotation_matrix_to_rpy(rotation) for rotation in link6_rotations])
+        )
+        link6_labels = [
             (
-                f"{side_label} EEF  xyz[m] "
+                f"{side_label} EEF (link6)  xyz[m] "
                 f"{position[0]:+.3f} {position[1]:+.3f} {position[2]:+.3f}\n"
                 f"rpy[deg] {angles[0]:+.1f} {angles[1]:+.1f} {angles[2]:+.1f}"
             )
-            for position, angles in zip(translations, rpy_degrees)
+            for position, angles in zip(link6_translations, link6_rpy_degrees)
         ]
 
-        entity_path = f"{ROBOT_EEF_ENTITY_PATH}/{dataset_side}"
-        eef_frame = f"{urdf_prefix}_eef"
-        rr.log(entity_path, rr.CoordinateFrame(eef_frame), static=True)
+        link6_entity_path = f"{ROBOT_LINK6_ENTITY_PATH}/{dataset_side}"
+        link6_frame = f"{urdf_prefix}_link6_eef"
+        rr.log(link6_entity_path, rr.CoordinateFrame(link6_frame), static=True)
+        # Connect link6_eef frame to link6 with identity transform (same position)
         rr.log(
-            entity_path,
+            link6_entity_path,
             rr.Transform3D(
-                translation=finger_origins[0],
+                translation=[0.0, 0.0, 0.0],
                 parent_frame=f"{urdf_prefix}_link6",
-                child_frame=eef_frame,
+                child_frame=link6_frame,
             ),
             static=True,
         )
-        rr.log(entity_path, rr.TransformAxes3D(EEF_AXIS_LENGTH_METERS), static=True)
+        rr.log(link6_entity_path, rr.TransformAxes3D(EEF_AXIS_LENGTH_METERS * 0.8), static=True)
         rr.log(
-            entity_path,
+            link6_entity_path,
             rr.Points3D(
                 [[0.0, 0.0, 0.0]],
                 radii=[0.012],
@@ -900,11 +1180,72 @@ def log_piper_eef_poses(
             static=True,
         )
         rr.send_columns(
-            entity_path,
+            link6_entity_path,
             indexes=[time_column],
             columns=rr.Points3D.columns(
                 positions=np.zeros((frame_count, 3), dtype=np.float32),
-                labels=labels,
+                labels=link6_labels,
+            ).partition(lengths=[1] * frame_count),
+        )
+
+        # --- Log TCP (finger origin position) ---
+        # Both finger joints originate near the gripper center. Use their
+        # midpoint as the TCP position while retaining the link6 orientation.
+        finger_origins = np.asarray(
+            [
+                urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}").origin_xyz
+                for joint_index in (7, 8)
+            ],
+            dtype=np.float64,
+        )
+        finger_midpoint = finger_origins.mean(axis=0)
+        link_to_tcp = np.eye(4, dtype=np.float64)
+        link_to_tcp[:3, 3] = finger_midpoint
+        tcp_poses = link6_poses @ link_to_tcp
+
+        tcp_translations = tcp_poses[:, :3, 3]
+        tcp_rotations = tcp_poses[:, :3, :3]
+        tcp_rpy_degrees = np.rad2deg(
+            np.asarray([rotation_matrix_to_rpy(rotation) for rotation in tcp_rotations])
+        )
+        tcp_labels = [
+            (
+                f"{side_label} TCP  xyz[m] "
+                f"{position[0]:+.3f} {position[1]:+.3f} {position[2]:+.3f}\n"
+                f"rpy[deg] {angles[0]:+.1f} {angles[1]:+.1f} {angles[2]:+.1f}"
+            )
+            for position, angles in zip(tcp_translations, tcp_rpy_degrees)
+        ]
+
+        tcp_entity_path = f"{ROBOT_EEF_ENTITY_PATH}/{dataset_side}"
+        tcp_frame = f"{urdf_prefix}_tcp"
+        rr.log(tcp_entity_path, rr.CoordinateFrame(tcp_frame), static=True)
+        rr.log(
+            tcp_entity_path,
+            rr.Transform3D(
+                translation=finger_midpoint,
+                parent_frame=f"{urdf_prefix}_link6",
+                child_frame=tcp_frame,
+            ),
+            static=True,
+        )
+        rr.log(tcp_entity_path, rr.TransformAxes3D(EEF_AXIS_LENGTH_METERS), static=True)
+        rr.log(
+            tcp_entity_path,
+            rr.Points3D(
+                [[0.0, 0.0, 0.0]],
+                radii=[0.012],
+                colors=[color],
+                show_labels=True,
+            ),
+            static=True,
+        )
+        rr.send_columns(
+            tcp_entity_path,
+            indexes=[time_column],
+            columns=rr.Points3D.columns(
+                positions=np.zeros((frame_count, 3), dtype=np.float32),
+                labels=tcp_labels,
             ).partition(lengths=[1] * frame_count),
         )
 
@@ -917,11 +1258,39 @@ def log_piper_robot_replay(
     temporary_directory: Path,
     recording: rr.RecordingStream,
     package_root: Path,
+    gripper_signs: tuple[float, float] = PIPER_GRIPPER_SIGNS,
+    strip_prefixes: tuple[str, ...] = ("bl_", "br_"),
+    strip_link_names: frozenset[str] = frozenset(),
+    patch_dae: bool = False,
+    mesh_overrides: Mapping[str, str] | None = None,
+    force_solid_texture_links: frozenset[str] = frozenset(),
+    box_overrides: Mapping[str, tuple[float, float, float]] | None = None,
+    material_overrides: Mapping[str, tuple[float, float, float, float]] | None = None,
+    gripper_mode: str = "width",
 ) -> None:
-    """Log follower geometry and animated Piper joint transforms."""
+    """Log follower geometry and animated bimanual joint transforms.
+
+    *gripper_mode* selects how the gripper state value is interpreted:
+
+    - ``"width"`` (Piper): value is the total finger-to-finger opening in
+      metres; each finger moves by ``value * 0.5``.
+    - ``"normalized"`` (Arx5/RoboTwin): value is a ``[0, 1]`` scalar where
+      ``1`` means fully open (URDF joint upper limit) and ``0`` means
+      closed; each finger moves by ``value * joint_upper_limit``.
+    """
     prepend_ros_package_path(package_root)
     prepared_urdf = temporary_directory / "aloha_follower_visual.urdf"
-    prepare_follower_visual_urdf(urdf_path, prepared_urdf)
+    prepare_follower_visual_urdf(
+        urdf_path,
+        prepared_urdf,
+        strip_prefixes=strip_prefixes,
+        strip_link_names=strip_link_names,
+        patch_dae=patch_dae,
+        mesh_overrides=mesh_overrides,
+        force_solid_texture_links=force_solid_texture_links,
+        box_overrides=box_overrides,
+        material_overrides=material_overrides,
+    )
 
     try:
         urdf_tree = rr.urdf.UrdfTree.from_file_path(
@@ -974,13 +1343,24 @@ def log_piper_robot_replay(
             )
 
         gripper_width = state_values[:, state_indices[f"{dataset_side}_gripper"]]
-        positive_position, negative_position, was_clipped = gripper_finger_positions(
-            gripper_width
-        )
+        if gripper_mode == "normalized":
+            # Binary [0,1] scalar: 1 = fully open (joint upper limit).
+            joint7 = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint7")
+            assert joint7 is not None
+            upper = joint7.limit_upper if joint7.limit_upper is not None else 0.04
+            positive_position = np.clip(gripper_width, 0.0, 1.0) * float(upper)
+            negative_position = -positive_position
+            was_clipped = False
+        else:
+            positive_position, negative_position, was_clipped = (
+                gripper_finger_positions(gripper_width)
+            )
         gripper_was_clipped = gripper_was_clipped or was_clipped
+        joint7_value = positive_position * gripper_signs[0]
+        joint8_value = positive_position * gripper_signs[1]
         for joint_index, values in (
-            (7, positive_position),
-            (8, negative_position),
+            (7, joint7_value),
+            (8, joint8_value),
         ):
             joint = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}")
             assert joint is not None
@@ -1014,19 +1394,31 @@ def maybe_log_robot_replay(
         return False
 
     explicit_urdf = args.urdf is not None
-    state_indices, incompatibility = piper_state_indices(info, table)
-    if incompatibility is not None or state_indices is None:
-        message = f"robot replay unavailable: {incompatibility}"
-        if explicit_urdf:
-            raise SystemExit(message)
-        print(f"Warning: {message}")
-        return False
 
-    urdf_path = (
-        args.urdf.expanduser().resolve()
-        if explicit_urdf
-        else default_aloha_urdf(script_root).resolve()
-    )
+    # Try Piper schema first, then Arx5/RoboTwin.
+    state_indices, incompatibility = piper_state_indices(info, table)
+    profile = "piper"
+    if state_indices is None:
+        state_indices, arx5_incompat = arx5_state_indices(info, table)
+        if state_indices is None:
+            message = (
+                f"piper replay unavailable: {incompatibility}; "
+                f"arx5 replay unavailable: {arx5_incompat}"
+            )
+            if explicit_urdf:
+                raise SystemExit(message)
+            print(f"Warning: {message}")
+            return False
+        profile = "arx5"
+        incompatibility = arx5_incompat
+
+    if explicit_urdf:
+        urdf_path = args.urdf.expanduser().resolve()
+    elif profile == "arx5":
+        urdf_path = default_arx5_urdf(script_root).resolve()
+    else:
+        urdf_path = default_aloha_urdf(script_root).resolve()
+
     if not urdf_path.is_file():
         message = f"robot replay URDF not found: {urdf_path}"
         if explicit_urdf:
@@ -1034,7 +1426,29 @@ def maybe_log_robot_replay(
         print(f"Warning: {message}")
         return False
 
-    package_root = script_root / "embodiments"
+    if profile == "arx5":
+        package_root = urdf_path.parent
+        gripper_signs = ARX5_GRIPPER_SIGNS
+        strip_prefixes = ()
+        strip_link_names = frozenset()
+        mesh_overrides = ARX5_FULL_MESH_OVERRIDES
+        force_solid_texture_links = ARX5_FORCE_SOLID_TEXTURE_LINKS
+        box_overrides = {}
+        material_overrides = ARX5_FULL_MATERIAL_OVERRIDES
+        patch_dae = True
+        gripper_mode = "normalized"
+    else:
+        package_root = script_root / "embodiments"
+        gripper_signs = PIPER_GRIPPER_SIGNS
+        strip_prefixes = ("bl_", "br_")
+        strip_link_names = frozenset()
+        patch_dae = False
+        mesh_overrides = {}
+        force_solid_texture_links = frozenset()
+        box_overrides = {}
+        material_overrides = {}
+        gripper_mode = "width"
+
     try:
         log_piper_robot_replay(
             table,
@@ -1044,6 +1458,15 @@ def maybe_log_robot_replay(
             temporary_directory,
             recording,
             package_root,
+            gripper_signs=gripper_signs,
+            strip_prefixes=strip_prefixes,
+            strip_link_names=strip_link_names,
+            patch_dae=patch_dae,
+            mesh_overrides=mesh_overrides,
+            force_solid_texture_links=force_solid_texture_links,
+            box_overrides=box_overrides,
+            material_overrides=material_overrides,
+            gripper_mode=gripper_mode,
         )
     except RuntimeError as error:
         if explicit_urdf:
@@ -1051,30 +1474,34 @@ def maybe_log_robot_replay(
         print(f"Warning: robot replay unavailable: {error}")
         return False
 
-    print(f"Loaded robot replay: {urdf_path}")
+    print(f"Loaded robot replay ({profile}): {urdf_path}")
     return True
 
 
 def make_blueprint(
-    video_views: list[tuple[str, str]],
+    video_views: list[tuple[str, str, bool]],
     signal_views: list[tuple[str, str]],
     robot_replay: bool = False,
     calibrated_camera: CameraCalibration | None = None,
 ) -> rrb.Blueprint:
-    camera_views: list[Any] = [
-        rrb.Spatial2DView(origin=path, name=name) for name, path in video_views
+    rgb_views: list[Any] = [
+        rrb.Spatial2DView(origin=path, name=name)
+        for name, path, is_depth in video_views
+        if not is_depth
     ]
+    depth_views: list[Any] = [
+        rrb.Spatial2DView(origin=path, name=name)
+        for name, path, is_depth in video_views
+        if is_depth
+    ]
+    all_camera_views = rgb_views + depth_views
+
     if robot_replay:
         robot_view = rrb.Spatial3DView(origin=ROBOT_ENTITY_PATH, name="Robot replay")
         robot_area: Any = robot_view
         if calibrated_camera is not None:
             calibrated_view = rrb.Spatial2DView(
-                # A pinhole at the 2D view origin projects all included 3D
-                # robot geometry using the logged intrinsics and extrinsics.
                 origin=calibrated_camera.entity_path,
-                # Do not include /cameras/** here: those video entities use
-                # implicit path frames and are intentionally disconnected
-                # from the robot's named ``footprint`` transform tree.
                 contents=[f"/{ROBOT_ENTITY_PATH}/**"],
                 name=(
                     f"Main camera replay "
@@ -1091,17 +1518,28 @@ def make_blueprint(
                 active_tab=0,
                 name="Robot replay",
             )
-        if camera_views:
+
+        if rgb_views or depth_views:
+            camera_rows: list[Any] = []
+            if rgb_views:
+                camera_rows.append(rrb.Grid(*rgb_views, name="RGB"))
+            if depth_views:
+                camera_rows.append(rrb.Grid(*depth_views, name="Depth"))
+            camera_area: Any = (
+                rrb.Vertical(*camera_rows, name="Cameras")
+                if len(camera_rows) > 1
+                else camera_rows[0]
+            )
             top_area: Any = rrb.Horizontal(
                 robot_area,
-                rrb.Grid(*camera_views, name="Cameras"),
+                camera_area,
                 column_shares=[1, 2],
                 name="Replay",
             )
         else:
             top_area = robot_area
-    elif camera_views:
-        top_area = rrb.Horizontal(*camera_views, name="Cameras")
+    elif all_camera_views:
+        top_area = rrb.Horizontal(*all_camera_views, name="Cameras")
     else:
         top_area = rrb.TextDocumentView(origin="episode_info", name="Episode")
 
@@ -1110,7 +1548,9 @@ def make_blueprint(
     ]
     plot_area: Any
     if plots:
-        plot_area = rrb.Tabs(*plots, active_tab=0, name="Signals")
+        # Show all signal plots simultaneously in a grid instead of
+        # hiding them behind switchable tabs.
+        plot_area = rrb.Grid(*plots, name="Signals")
     else:
         plot_area = rrb.TextDocumentView(origin="episode_info", name="Episode")
 
@@ -1170,14 +1610,14 @@ def parse_args() -> argparse.Namespace:
         "--urdf",
         type=Path,
         help=(
-            "Use this URDF for an eligible Piper replay instead of the default "
-            "embodiments/aloha_new_description model"
+            "Use this URDF for an eligible replay instead of the auto-detected "
+            "default (aloha_new_description for Piper, aloha-agilex for Arx5)"
         ),
     )
     robot_group.add_argument(
         "--no-robot",
         action="store_true",
-        help="Disable automatic URDF replay for compatible Piper datasets",
+        help="Disable automatic URDF replay for compatible bimanual datasets",
     )
     parser.add_argument(
         "--camera-calibration",
@@ -1281,7 +1721,7 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="lerobot-rerun-") as temporary:
         temporary_directory = Path(temporary)
-        video_views: list[tuple[str, str]] = []
+        video_views: list[tuple[str, str, bool]] = []
         if not args.no_video:
             video_views = log_videos(dataset, info, episode, temporary_directory)
         robot_replay = maybe_log_robot_replay(

@@ -1,0 +1,437 @@
+{
+    "codebase_version": "v3.0",
+    "fps": 15,
+    "features": {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": [
+                14
+            ],
+            "names": [
+                [
+                    "left_joint_0",
+                    "left_joint_1",
+                    "left_joint_2",
+                    "left_joint_3",
+                    "left_joint_4",
+                    "left_joint_5",
+                    "left_joint_6",
+                    "right_joint_0",
+                    "right_joint_1",
+                    "right_joint_2",
+                    "right_joint_3",
+                    "right_joint_4",
+                    "right_joint_5",
+                    "right_joint_6"
+                ]
+            ]
+        },
+        "action": {
+            "dtype": "float32",
+            "shape": [
+                14
+            ],
+            "names": [
+                [
+                    "left_joint_0",
+                    "left_joint_1",
+                    "left_joint_2",
+                    "left_joint_3",
+                    "left_joint_4",
+                    "left_joint_5",
+                    "left_joint_6",
+                    "right_joint_0",
+                    "right_joint_1",
+                    "right_joint_2",
+                    "right_joint_3",
+                    "right_joint_4",
+                    "right_joint_5",
+                    "right_joint_6"
+                ]
+            ]
+        },
+        "observation.images.cam_high": {
+            "dtype": "video",
+            "shape": [
+                240,
+                320,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "video.height": 240,
+                "video.width": 320,
+                "video.codec": "h264",
+                "video.pix_fmt": "yuv420p",
+                "video.fps": 15,
+                "video.channels": 3,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 18,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {
+                    "bf": 0
+                },
+                "is_depth_map": false
+            }
+        },
+        "observation.images.cam_high_depth": {
+            "dtype": "video",
+            "shape": [
+                240,
+                320,
+                1
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "is_depth_map": true,
+                "depth_unit": "mm",
+                "invalid_value": 0,
+                "video.height": 240,
+                "video.width": 320,
+                "video.codec": "hevc",
+                "video.pix_fmt": "gray12le",
+                "video.fps": 15,
+                "video.channels": 1,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 30,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {
+                    "x265-params": "lossless=1"
+                },
+                "video.depth_min": 0.0,
+                "video.depth_max": 5.0,
+                "video.shift": 3.5,
+                "video.use_log": true
+            }
+        },
+        "calibration.cam_high.intrinsic_matrix": {
+            "dtype": "float32",
+            "shape": [
+                3,
+                3
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "convention": "OpenCV pinhole; pixel coordinates"
+            }
+        },
+        "calibration.cam_high.extrinsic_matrix": {
+            "dtype": "float32",
+            "shape": [
+                4,
+                4
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "transform": "world_to_camera",
+                "camera_coordinates": "OpenCV: +x right, +y down, +z forward"
+            }
+        },
+        "calibration.cam_high.camera_pose_matrix": {
+            "dtype": "float32",
+            "shape": [
+                4,
+                4
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "transform": "camera_to_world",
+                "camera_coordinates": "OpenCV: +x right, +y down, +z forward"
+            }
+        },
+        "observation.images.cam_left_wrist": {
+            "dtype": "video",
+            "shape": [
+                240,
+                320,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "video.height": 240,
+                "video.width": 320,
+                "video.codec": "h264",
+                "video.pix_fmt": "yuv420p",
+                "video.fps": 15,
+                "video.channels": 3,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 18,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {
+                    "bf": 0
+                },
+                "is_depth_map": false
+            }
+        },
+        "observation.images.cam_left_wrist_depth": {
+            "dtype": "video",
+            "shape": [
+                240,
+                320,
+                1
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "is_depth_map": true,
+                "depth_unit": "mm",
+                "invalid_value": 0,
+                "video.height": 240,
+                "video.width": 320,
+                "video.codec": "hevc",
+                "video.pix_fmt": "gray12le",
+                "video.fps": 15,
+                "video.channels": 1,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 30,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {
+                    "x265-params": "lossless=1"
+                },
+                "video.depth_min": 0.0,
+                "video.depth_max": 5.0,
+                "video.shift": 3.5,
+                "video.use_log": true
+            }
+        },
+        "calibration.cam_left_wrist.intrinsic_matrix": {
+            "dtype": "float32",
+            "shape": [
+                3,
+                3
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "convention": "OpenCV pinhole; pixel coordinates"
+            }
+        },
+        "calibration.cam_left_wrist.extrinsic_matrix": {
+            "dtype": "float32",
+            "shape": [
+                4,
+                4
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "transform": "world_to_camera",
+                "camera_coordinates": "OpenCV: +x right, +y down, +z forward"
+            }
+        },
+        "calibration.cam_left_wrist.camera_pose_matrix": {
+            "dtype": "float32",
+            "shape": [
+                4,
+                4
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "transform": "camera_to_world",
+                "camera_coordinates": "OpenCV: +x right, +y down, +z forward"
+            }
+        },
+        "observation.images.cam_right_wrist": {
+            "dtype": "video",
+            "shape": [
+                240,
+                320,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "video.height": 240,
+                "video.width": 320,
+                "video.codec": "h264",
+                "video.pix_fmt": "yuv420p",
+                "video.fps": 15,
+                "video.channels": 3,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 18,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {
+                    "bf": 0
+                },
+                "is_depth_map": false
+            }
+        },
+        "observation.images.cam_right_wrist_depth": {
+            "dtype": "video",
+            "shape": [
+                240,
+                320,
+                1
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "is_depth_map": true,
+                "depth_unit": "mm",
+                "invalid_value": 0,
+                "video.height": 240,
+                "video.width": 320,
+                "video.codec": "hevc",
+                "video.pix_fmt": "gray12le",
+                "video.fps": 15,
+                "video.channels": 1,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 30,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {
+                    "x265-params": "lossless=1"
+                },
+                "video.depth_min": 0.0,
+                "video.depth_max": 5.0,
+                "video.shift": 3.5,
+                "video.use_log": true
+            }
+        },
+        "calibration.cam_right_wrist.intrinsic_matrix": {
+            "dtype": "float32",
+            "shape": [
+                3,
+                3
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "convention": "OpenCV pinhole; pixel coordinates"
+            }
+        },
+        "calibration.cam_right_wrist.extrinsic_matrix": {
+            "dtype": "float32",
+            "shape": [
+                4,
+                4
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "transform": "world_to_camera",
+                "camera_coordinates": "OpenCV: +x right, +y down, +z forward"
+            }
+        },
+        "calibration.cam_right_wrist.camera_pose_matrix": {
+            "dtype": "float32",
+            "shape": [
+                4,
+                4
+            ],
+            "names": [
+                "rows",
+                "columns"
+            ],
+            "info": {
+                "transform": "camera_to_world",
+                "camera_coordinates": "OpenCV: +x right, +y down, +z forward"
+            }
+        },
+        "timestamp": {
+            "dtype": "float32",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "frame_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "episode_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "task_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        }
+    },
+    "total_episodes": 1,
+    "total_frames": 180,
+    "total_tasks": 1,
+    "chunks_size": 1000,
+    "data_files_size_in_mb": 100,
+    "video_files_size_in_mb": 200,
+    "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+    "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+    "robot_type": "unified_robot",
+    "splits": {
+        "train": "0:1"
+    }
+}

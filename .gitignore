@@ -35,7 +35,6 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
-LIBERO/
 
 # Jupyter
 .ipynb_checkpoints/
