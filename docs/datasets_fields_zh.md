@@ -132,6 +132,8 @@ Franka 末端执行器（end-effector）位姿 + 夹爪状态，采用**末端�
 
 这些矩阵可用于将深度图反投影到世界坐标系，或在 Rerun 中重建对齐的相机视窗。
 
+RoboTwin 的相机矩阵以 SAPIEN `world` 为参考，而机器人文档中的 `reference_frame` 对应 URDF `footprint`。二者之间还包含机器人根节点 `robot_pose`；完整说明和矩阵推导见 [`README_RoboTwin_Camera_Coordinates.md`](README_RoboTwin_Camera_Coordinates.md)。
+
 ---
 
 ## 3. W2（双臂 Piper，含速度/力，真机）

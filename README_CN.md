@@ -12,6 +12,7 @@
 
 - 读取本地 LeRobot v3.0 和 v2.1 数据集。
 - 在 `episode_time` 时间轴上同步 RGB/深度视频与数值特征。
+- 将成对 RGB-D 数据重建为 world/base 坐标系下的同步彩色点云。
 - 根据数据自动使用 URDF 回放 Piper/ALOHA 和 RoboTwin/Arx5 关节状态。
 - 对暂不支持机器人模型的 embodiment（例如示例中的 LIBERO/Franka）显示视频和数值信号。
 - 根据 OpenCV 外参重建固定标定相机视角。
@@ -30,7 +31,7 @@ cd Lerobot_Datasets
 
 ### 2. 安装环境
 
-以下命令会创建本项目测试使用的 Conda 环境。MP4 导出和 v3.0→v2.1 转换会使用 FFmpeg。
+以下命令会创建本项目测试使用的 Conda 环境。RGB-D 点云解码、MP4 导出和 v3.0→v2.1 转换会使用 FFmpeg。
 
 ```bash
 conda create -n rerun -c conda-forge python=3.10 ffmpeg -y
@@ -91,6 +92,15 @@ python visualize_lerobot_rerun.py \
   --episode 0
 ```
 
+加入 `--point-cloud` 后，会在统一的机器人 base 坐标系中重建主相机和两只腕部相机的 RGB-D 点云：
+
+```bash
+python visualize_lerobot_rerun.py \
+  --root assets/example/RoboTwin2 \
+  --episode 0 \
+  --point-cloud
+```
+
 #### Agilex-Aloha：Piper 双臂机器人
 
 [`assets/example/W2`](assets/example/W2) 包含 episode 0，共 1,034 帧、30 FPS、三路 RGB 相机，以及 14 维位置、速度、力矩和动作信号。脚本会自动回放前方两只 Piper 机械臂和夹爪。
@@ -125,6 +135,16 @@ python visualize_lerobot_rerun.py \
   --root assets/example \
   --list-datasets
 ```
+
+## Base 坐标系 RGB-D 点云
+
+传入 `--point-cloud` 后，脚本会发现兼容的 LeRobot v3 RGB-D 数据。名为 `observation.images.<camera>_depth` 的深度流会与 `observation.images.<camera>` RGB 流，以及逐帧的 `calibration.<camera>.intrinsic_matrix`、`camera_pose_matrix`（或 `extrinsic_matrix` 的逆矩阵）配对。三路点云在现有机器人三维视图中共同显示，同时保留在 `robot/scene_point_cloud` 下分别开关的能力。
+
+深度值直接从原始高位深视频解码，并使用 `meta/info.json` 中的量化参数恢复为米。RGB 与深度使用完全相同的采样行列。默认 `--point-cloud-stride 2`，因此 320×240 相机每帧最多产生 19,200 个点，RoboTwin2 三路合计最多 57,600 个点。使用 `--point-cloud-stride 1` 可恢复全分辨率，增大步长则可降低记录体积和查看器负担。
+
+点云最终以机器人 base/URDF `footprint` 为参考系。对于 RoboTwin/Arx5 的 `unified_robot` 数据，数据集 `world` 的 `+Y` 对应 URDF `footprint` 的 `+X`，并且两个原点相差 0.65 m；脚本会自动施加 `world → footprint` 变换 `(x, y, z) → (y + 0.65, -x, z)`，即绕 `+Z` 顺时针旋转 90° 后沿 base `+X` 平移 0.65 m。该变换通过逐帧匹配左右腕部相机标定位置与 URDF 正向运动学位置得到。其他机器人类型暂按 `world` 与 `footprint` 对齐处理。`--no-video --point-cloud` 会隐藏二维相机面板但继续生成点云；`--no-robot --point-cloud` 可以不加载 URDF，仅显示重建场景。
+
+RoboTwin 相机坐标、SAPIEN `world`、机器人 `reference_frame` 与 URDF `footprint` 的完整关系及矩阵推导，参见 [`docs/README_RoboTwin_Camera_Coordinates.md`](docs/README_RoboTwin_Camera_Coordinates.md)。
 
 ## 机器人回放与 Embodiment 模型
 

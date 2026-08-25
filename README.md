@@ -12,6 +12,7 @@ The repository includes three compact LeRobot v3.0 examples under [`assets/examp
 
 - Read local LeRobot v3.0 and v2.1 datasets.
 - Synchronize RGB/depth video and numerical features on the `episode_time` timeline.
+- Reconstruct synchronized RGB-colored point clouds from paired depth streams in the dataset world/base frame.
 - Automatically replay Piper/ALOHA and RoboTwin/Arx5 joint states with URDF models.
 - Inspect unsupported embodiments, such as the included LIBERO/Franka example, as video and signals only.
 - Reconstruct a fixed calibrated camera view from an OpenCV extrinsic matrix.
@@ -30,7 +31,7 @@ cd Lerobot_Datasets
 
 ### 2. Install the environment
 
-The commands below create the tested Conda environment. FFmpeg is used by the MP4 exporter and the v3.0-to-v2.1 converter.
+The commands below create the tested Conda environment. FFmpeg is used by RGB-D point-cloud decoding, the MP4 exporter, and the v3.0-to-v2.1 converter.
 
 ```bash
 conda create -n rerun -c conda-forge python=3.10 ffmpeg -y
@@ -91,6 +92,15 @@ python visualize_lerobot_rerun.py \
   --episode 0
 ```
 
+Add `--point-cloud` to reconstruct the main and two wrist RGB-D streams in the shared robot base frame:
+
+```bash
+python visualize_lerobot_rerun.py \
+  --root assets/example/RoboTwin2 \
+  --episode 0 \
+  --point-cloud
+```
+
 #### Agilex-Aloha: Piper bimanual robot
 
 [`assets/example/W2`](assets/example/W2) contains episode 0 with 1,034 frames at 30 FPS, three RGB cameras, and 14-dimensional position, velocity, effort, and action signals. The visualizer automatically replays the two front Piper arms and grippers.
@@ -125,6 +135,14 @@ python visualize_lerobot_rerun.py \
   --root assets/example \
   --list-datasets
 ```
+
+## RGB-D point clouds in the base frame
+
+Pass `--point-cloud` to discover compatible LeRobot v3 RGB-D pairs. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.
+
+Depth is decoded from the original high-bit-depth video with the quantization settings in `meta/info.json`. Each RGB pixel uses the same sampled row and column as its depth value. The default stride is `2`, so a 320×240 camera contributes at most 19,200 points per frame and the three RoboTwin2 cameras contribute at most 57,600 points. Use `--point-cloud-stride 1` for full resolution or a larger value for lighter recordings.
+
+Point clouds are ultimately expressed in the robot base/URDF `footprint` frame. For RoboTwin/Arx5 `unified_robot` data, dataset-world `+Y` corresponds to URDF-footprint `+X`, and the two origins are 0.65 m apart. The script therefore maps `world → footprint` as `(x, y, z) → (y + 0.65, -x, z)`: a 90-degree clockwise yaw about `+Z`, followed by a 0.65 m translation along base `+X`. This transform was recovered by matching both calibrated wrist-camera positions against their URDF forward-kinematics positions over the episode. Other robot types currently treat `world` and `footprint` as aligned. `--no-video --point-cloud` omits the 2D camera panels while retaining point-cloud decoding, and `--no-robot --point-cloud` shows the reconstructed scene without loading a URDF.
 
 ## Robot replay and embodiment models
 

@@ -53,6 +53,21 @@ DEFAULT_CAMERA_HEIGHT = 480
 DEFAULT_CAMERA_WIDTH = 640
 CAMERA_BASE_FRAME = "footprint"
 CALIBRATED_CAMERAS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/calibrated_cameras"
+POINT_CLOUDS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/scene_point_cloud"
+DEFAULT_POINT_CLOUD_STRIDE = 2
+DEPTH_QUANTIZATION_MAX = 4095
+ARX5_WORLD_TO_BASE_ROTATION = np.array(
+    [
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
+ARX5_WORLD_TO_BASE_TRANSLATION = np.array(
+    [0.65, 0.0, 0.0],
+    dtype=np.float64,
+)
 PIPER_GRIPPER_JOINT_NAMES = {
     *(f"fl_joint{index}" for index in (7, 8)),
     *(f"fr_joint{index}" for index in (7, 8)),
@@ -102,6 +117,34 @@ class CameraCalibration:
     @property
     def frame_name(self) -> str:
         return f"calibrated_{self.camera_name}"
+
+
+@dataclass(frozen=True)
+class PointCloudCamera:
+    """One paired RGB-D stream with per-frame OpenCV calibration."""
+
+    camera_name: str
+    rgb_key: str
+    depth_key: str
+    intrinsic_key: str
+    camera_pose_key: str | None
+    extrinsic_key: str | None
+    height: int
+    width: int
+    depth_min: float
+    depth_max: float
+    depth_shift: float
+    depth_use_log: bool
+    depth_unit: str
+    invalid_value: float
+
+    @property
+    def entity_path(self) -> str:
+        return f"{POINT_CLOUDS_ENTITY_PATH}/{safe_entity_name(self.camera_name)}"
+
+    @property
+    def frame_name(self) -> str:
+        return f"point_cloud_{safe_entity_name(self.camera_name)}"
 
 
 def default_aloha_urdf(script_root: Path) -> Path:
@@ -432,6 +475,589 @@ def log_signals(
             )
         views.append((feature_key, root))
     return views
+
+
+def discover_point_cloud_cameras(
+    info: dict[str, Any], table: pa.Table
+) -> tuple[list[PointCloudCamera], list[str]]:
+    """Discover paired RGB-D streams with per-frame calibration columns."""
+    features = info.get("features", {})
+    if not isinstance(features, dict):
+        return [], ["dataset feature metadata is not a dictionary"]
+
+    cameras: list[PointCloudCamera] = []
+    issues: list[str] = []
+    for depth_key, depth_feature in features.items():
+        if not isinstance(depth_feature, dict) or depth_feature.get("dtype") != "video":
+            continue
+        depth_info = depth_feature.get("info") or {}
+        if not isinstance(depth_info, dict):
+            continue
+        is_depth = bool(
+            depth_info.get("is_depth_map", depth_info.get("video.is_depth_map", False))
+        )
+        if not is_depth:
+            continue
+        if not depth_key.endswith("_depth"):
+            issues.append(
+                f"skipping {depth_key}: depth feature name does not end in '_depth'"
+            )
+            continue
+
+        rgb_key = depth_key[: -len("_depth")]
+        rgb_feature = features.get(rgb_key)
+        if not isinstance(rgb_feature, dict) or rgb_feature.get("dtype") != "video":
+            issues.append(f"skipping {depth_key}: paired RGB feature {rgb_key} is missing")
+            continue
+
+        try:
+            depth_shape = tuple(int(value) for value in depth_feature.get("shape", ()))
+            rgb_shape = tuple(int(value) for value in rgb_feature.get("shape", ()))
+        except (TypeError, ValueError):
+            issues.append(f"skipping {depth_key}: RGB-D feature shapes are invalid")
+            continue
+        if len(depth_shape) != 3 or depth_shape[2] != 1:
+            issues.append(
+                f"skipping {depth_key}: expected depth shape (H, W, 1), got {depth_shape}"
+            )
+            continue
+        if rgb_shape != (depth_shape[0], depth_shape[1], 3):
+            issues.append(
+                f"skipping {depth_key}: paired RGB shape {rgb_shape} does not match "
+                f"{(depth_shape[0], depth_shape[1], 3)}"
+            )
+            continue
+
+        camera_name = rgb_key.rsplit(".", 1)[-1]
+        calibration_prefix = f"calibration.{camera_name}"
+        intrinsic_key = f"{calibration_prefix}.intrinsic_matrix"
+        pose_candidate = f"{calibration_prefix}.camera_pose_matrix"
+        extrinsic_candidate = f"{calibration_prefix}.extrinsic_matrix"
+        if intrinsic_key not in features or intrinsic_key not in table.column_names:
+            issues.append(f"skipping {depth_key}: missing {intrinsic_key}")
+            continue
+        camera_pose_key = (
+            pose_candidate
+            if pose_candidate in features and pose_candidate in table.column_names
+            else None
+        )
+        extrinsic_key = (
+            extrinsic_candidate
+            if extrinsic_candidate in features and extrinsic_candidate in table.column_names
+            else None
+        )
+        if camera_pose_key is None and extrinsic_key is None:
+            issues.append(
+                f"skipping {depth_key}: missing both {pose_candidate} and "
+                f"{extrinsic_candidate}"
+            )
+            continue
+
+        def depth_parameter(name: str) -> Any:
+            return depth_info.get(f"video.{name}", depth_info.get(name))
+
+        raw_parameters = {
+            name: depth_parameter(name)
+            for name in ("depth_min", "depth_max", "shift", "use_log")
+        }
+        missing_parameters = [
+            name for name, value in raw_parameters.items() if value is None
+        ]
+        if missing_parameters:
+            issues.append(
+                f"skipping {depth_key}: missing depth quantization metadata "
+                + ", ".join(missing_parameters)
+            )
+            continue
+        if depth_info.get("invalid_value") is None or depth_info.get("depth_unit") is None:
+            issues.append(
+                f"skipping {depth_key}: invalid_value and depth_unit metadata are required"
+            )
+            continue
+
+        try:
+            depth_min = float(raw_parameters["depth_min"])
+            depth_max = float(raw_parameters["depth_max"])
+            depth_shift = float(raw_parameters["shift"])
+            invalid_value = float(depth_info["invalid_value"])
+        except (TypeError, ValueError):
+            issues.append(f"skipping {depth_key}: depth metadata must be numeric")
+            continue
+        depth_use_log = bool(raw_parameters["use_log"])
+        depth_unit = str(depth_info["depth_unit"]).lower()
+        if depth_unit not in {"m", "mm"}:
+            issues.append(
+                f"skipping {depth_key}: unsupported depth unit {depth_unit!r}"
+            )
+            continue
+        if not np.all(
+            np.isfinite([depth_min, depth_max, depth_shift, invalid_value])
+        ):
+            issues.append(f"skipping {depth_key}: depth metadata is not finite")
+            continue
+        if depth_max <= depth_min:
+            issues.append(f"skipping {depth_key}: depth_max must exceed depth_min")
+            continue
+        if depth_use_log and depth_min + depth_shift <= 0.0:
+            issues.append(
+                f"skipping {depth_key}: depth_min + shift must be positive in log mode"
+            )
+            continue
+
+        cameras.append(
+            PointCloudCamera(
+                camera_name=camera_name,
+                rgb_key=rgb_key,
+                depth_key=depth_key,
+                intrinsic_key=intrinsic_key,
+                camera_pose_key=camera_pose_key,
+                extrinsic_key=extrinsic_key,
+                height=depth_shape[0],
+                width=depth_shape[1],
+                depth_min=depth_min,
+                depth_max=depth_max,
+                depth_shift=depth_shift,
+                depth_use_log=depth_use_log,
+                depth_unit=depth_unit,
+                invalid_value=invalid_value,
+            )
+        )
+    return cameras, issues
+
+
+def dequantize_depth_codes(
+    quantized: np.ndarray,
+    depth_min: float,
+    depth_max: float,
+    shift: float,
+    use_log: bool,
+) -> np.ndarray:
+    """Convert LeRobot 12-bit depth codes into float32 metres."""
+    codes = np.asarray(quantized, dtype=np.float32)
+    normalized = codes / np.float32(DEPTH_QUANTIZATION_MAX)
+    if use_log:
+        if depth_min + shift <= 0.0:
+            raise ValueError("depth_min + shift must be positive in log mode")
+        log_min = np.log(float(depth_min + shift))
+        log_max = np.log(float(depth_max + shift))
+        depth = np.exp(normalized * (log_max - log_min) + log_min) - shift
+    else:
+        depth = normalized * (depth_max - depth_min) + depth_min
+    return np.clip(depth, depth_min, depth_max).astype(np.float32, copy=False)
+
+
+def quantized_code_for_depth_value(
+    value: float,
+    unit: str,
+    depth_min: float,
+    depth_max: float,
+    shift: float,
+    use_log: bool,
+) -> int:
+    """Map a physical invalid-depth sentinel to its stored 12-bit code."""
+    value_metres = float(value) * (0.001 if unit == "mm" else 1.0)
+    if use_log:
+        if depth_min + shift <= 0.0:
+            raise ValueError("depth_min + shift must be positive in log mode")
+        if value_metres + shift <= 0.0:
+            normalized = 0.0
+        else:
+            normalized = (
+                np.log(value_metres + shift) - np.log(depth_min + shift)
+            ) / (np.log(depth_max + shift) - np.log(depth_min + shift))
+    else:
+        normalized = (value_metres - depth_min) / (depth_max - depth_min)
+    return int(
+        np.rint(np.clip(normalized, 0.0, 1.0) * DEPTH_QUANTIZATION_MAX)
+    )
+
+
+def backproject_rgbd_to_world(
+    depth_metres: np.ndarray,
+    rgb: np.ndarray,
+    intrinsic: np.ndarray,
+    camera_to_world: np.ndarray,
+    stride: int,
+    valid_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Back-project aligned RGB-D pixels and transform them into base/world."""
+    if stride <= 0:
+        raise ValueError("point-cloud stride must be positive")
+    depth = np.asarray(depth_metres, dtype=np.float32)
+    colors = np.asarray(rgb, dtype=np.uint8)
+    if depth.ndim != 2:
+        raise ValueError(f"expected a 2D depth map, got shape {depth.shape}")
+    if colors.shape != (*depth.shape, 3):
+        raise ValueError(
+            f"RGB shape {colors.shape} does not match depth shape {depth.shape}"
+        )
+    intrinsic = np.asarray(intrinsic, dtype=np.float64)
+    camera_to_world = np.asarray(camera_to_world, dtype=np.float64)
+    if intrinsic.shape != (3, 3) or camera_to_world.shape != (4, 4):
+        raise ValueError("point-cloud calibration must contain 3x3 and 4x4 matrices")
+
+    rows = np.arange(0, depth.shape[0], stride, dtype=np.float32)
+    columns = np.arange(0, depth.shape[1], stride, dtype=np.float32)
+    pixel_u, pixel_v = np.meshgrid(columns, rows)
+    sampled_depth = depth[::stride, ::stride]
+    sampled_colors = colors[::stride, ::stride]
+    valid = np.isfinite(sampled_depth) & (sampled_depth > 0.0)
+    if valid_mask is not None:
+        mask = np.asarray(valid_mask, dtype=bool)
+        if mask.shape != depth.shape:
+            raise ValueError(
+                f"valid-mask shape {mask.shape} does not match depth shape {depth.shape}"
+            )
+        valid &= mask[::stride, ::stride]
+
+    z = sampled_depth[valid]
+    x = (pixel_u[valid] - intrinsic[0, 2]) * z / intrinsic[0, 0]
+    y = (pixel_v[valid] - intrinsic[1, 2]) * z / intrinsic[1, 1]
+    camera_points = np.column_stack((x, y, z))
+    rotation = camera_to_world[:3, :3]
+    world_points = (
+        camera_points[:, 0, None] * rotation[None, :, 0]
+        + camera_points[:, 1, None] * rotation[None, :, 1]
+        + camera_points[:, 2, None] * rotation[None, :, 2]
+        + camera_to_world[:3, 3]
+    )
+    return (
+        np.asarray(world_points, dtype=np.float32),
+        np.ascontiguousarray(sampled_colors[valid]),
+    )
+
+
+def point_cloud_world_to_base_transform(info: dict[str, Any]) -> np.ndarray:
+    """Return the dataset-world to robot-footprint transform.
+
+    RoboTwin's ``unified_robot`` frame has +Y where the Arx5 URDF footprint
+    has +X, and its origin is 0.65 m in front of the footprint origin. This
+    fixed transform is independently recovered by matching both wrist-camera
+    positions to their URDF forward-kinematics positions over the episode.
+    """
+    transform = np.eye(4, dtype=np.float64)
+    if info.get("robot_type") == ARX5_ROBOT_TYPE:
+        transform[:3, :3] = ARX5_WORLD_TO_BASE_ROTATION
+        transform[:3, 3] = ARX5_WORLD_TO_BASE_TRANSLATION
+    return transform
+
+
+def _matrix_series(
+    table: pa.Table, feature_key: str, matrix_shape: tuple[int, int]
+) -> np.ndarray:
+    values = np.asarray(table[feature_key].to_pylist(), dtype=np.float64)
+    expected_shape = (table.num_rows, *matrix_shape)
+    if values.shape != expected_shape:
+        raise ValueError(
+            f"{feature_key} has shape {values.shape}; expected {expected_shape}"
+        )
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{feature_key} contains non-finite values")
+    return values
+
+
+def point_cloud_calibration_series(
+    camera: PointCloudCamera, table: pa.Table
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load and validate per-frame intrinsics and camera-to-world poses."""
+    intrinsics = _matrix_series(table, camera.intrinsic_key, (3, 3))
+    if np.any(intrinsics[:, 0, 0] <= 0.0) or np.any(intrinsics[:, 1, 1] <= 0.0):
+        raise ValueError(f"{camera.intrinsic_key} contains non-positive focal lengths")
+    if not np.allclose(intrinsics[:, 2, :], [0.0, 0.0, 1.0], atol=1e-5):
+        raise ValueError(f"{camera.intrinsic_key} has invalid homogeneous rows")
+
+    if camera.camera_pose_key is not None:
+        camera_to_world = _matrix_series(table, camera.camera_pose_key, (4, 4))
+    else:
+        assert camera.extrinsic_key is not None
+        world_to_camera = _matrix_series(table, camera.extrinsic_key, (4, 4))
+        try:
+            camera_to_world = np.linalg.inv(world_to_camera)
+        except np.linalg.LinAlgError as error:
+            raise ValueError(f"{camera.extrinsic_key} contains a singular matrix") from error
+
+    if not np.allclose(camera_to_world[:, 3, :], [0.0, 0.0, 0.0, 1.0], atol=1e-5):
+        raise ValueError(f"camera pose for {camera.camera_name} has invalid bottom rows")
+    rotations = camera_to_world[:, :3, :3]
+    rotation_products = np.matmul(np.swapaxes(rotations, 1, 2), rotations)
+    if not np.allclose(rotation_products, np.eye(3), atol=1e-4):
+        raise ValueError(f"camera pose for {camera.camera_name} is not orthonormal")
+    if not np.allclose(np.linalg.det(rotations), 1.0, atol=1e-4):
+        raise ValueError(f"camera pose for {camera.camera_name} has invalid determinants")
+    return intrinsics, camera_to_world
+
+
+class FFmpegRawVideoReader:
+    """Stream a fixed number of raw frames from one episode video segment."""
+
+    def __init__(
+        self,
+        source: Path,
+        start_seconds: float,
+        frame_count: int,
+        pixel_format: str,
+        frame_shape: tuple[int, ...],
+        dtype: str | np.dtype[Any],
+    ) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg is required for point-cloud visualization")
+        self.source = source
+        self.frame_count = frame_count
+        self.frame_shape = frame_shape
+        self.dtype = np.dtype(dtype)
+        self.frame_bytes = int(np.prod(frame_shape)) * self.dtype.itemsize
+        command = [ffmpeg, "-v", "error", "-nostdin"]
+        if start_seconds > 0.0:
+            command.extend(["-ss", f"{start_seconds:.9f}"])
+        command.extend(
+            [
+                "-i",
+                str(source),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-frames:v",
+                str(frame_count),
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                pixel_format,
+                "pipe:1",
+            ]
+        )
+        self.process: subprocess.Popen[bytes] | None = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=self.frame_bytes * 2,
+        )
+
+    def __enter__(self) -> FFmpegRawVideoReader:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        self.close()
+
+    def read_frame(self, frame_index: int) -> np.ndarray:
+        process = self.process
+        if process is None or process.stdout is None:
+            raise RuntimeError(f"FFmpeg reader for {self.source} is closed")
+        frame_data = process.stdout.read(self.frame_bytes)
+        if len(frame_data) != self.frame_bytes:
+            if process.poll() is None:
+                process.kill()
+            _remaining_output, error_output = process.communicate()
+            self.process = None
+            detail = error_output.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"FFmpeg decoded {len(frame_data)} of {self.frame_bytes} bytes for "
+                f"frame {frame_index} from {self.source}"
+                + (f": {detail}" if detail else "")
+            )
+        return np.frombuffer(frame_data, dtype=self.dtype).reshape(self.frame_shape)
+
+    def finish(self) -> None:
+        process = self.process
+        if process is None or process.stdout is None or process.stderr is None:
+            return
+        extra_output, error_output = process.communicate()
+        return_code = process.returncode
+        self.process = None
+        detail = error_output.decode("utf-8", errors="replace").strip()
+        if return_code != 0:
+            raise RuntimeError(
+                f"FFmpeg failed while decoding {self.source}"
+                + (f": {detail}" if detail else "")
+            )
+        if extra_output:
+            raise RuntimeError(
+                f"FFmpeg produced unexpected extra frame data for {self.source}"
+            )
+
+    def close(self) -> None:
+        process = self.process
+        if process is None:
+            return
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        self.process = None
+
+
+def episode_video_source(
+    dataset: Path,
+    info: dict[str, Any],
+    episode: dict[str, Any],
+    video_key: str,
+) -> tuple[Path, float]:
+    metadata_prefix = f"videos/{video_key}"
+    required = [
+        f"{metadata_prefix}/chunk_index",
+        f"{metadata_prefix}/file_index",
+        f"{metadata_prefix}/from_timestamp",
+    ]
+    missing = [key for key in required if key not in episode]
+    if missing:
+        raise ValueError(
+            f"episode video metadata for {video_key} is missing: " + ", ".join(missing)
+        )
+    source = dataset / format_dataset_path(
+        info["video_path"],
+        video_key=video_key,
+        chunk_index=episode[f"{metadata_prefix}/chunk_index"],
+        file_index=episode[f"{metadata_prefix}/file_index"],
+    )
+    if not source.is_file():
+        raise ValueError(f"video file is missing: {source}")
+    return source, float(episode[f"{metadata_prefix}/from_timestamp"])
+
+
+def log_point_cloud_camera(
+    dataset: Path,
+    info: dict[str, Any],
+    episode: dict[str, Any],
+    table: pa.Table,
+    timestamps: np.ndarray,
+    camera: PointCloudCamera,
+    stride: int,
+) -> None:
+    """Decode, reconstruct, and log one RGB-D camera for the whole episode."""
+    dataset_fps = float(info["fps"])
+    for video_key in (camera.rgb_key, camera.depth_key):
+        stream_info = info["features"][video_key].get("info") or {}
+        stream_fps = stream_info.get("video.fps")
+        if stream_fps is not None and not np.isclose(
+            float(stream_fps), dataset_fps, atol=1e-6
+        ):
+            raise ValueError(
+                f"{video_key} is {stream_fps} FPS but the dataset is {dataset_fps} FPS"
+            )
+
+    intrinsics, camera_to_world = point_cloud_calibration_series(camera, table)
+    camera_to_base = point_cloud_world_to_base_transform(info) @ camera_to_world
+    rgb_source, rgb_start = episode_video_source(
+        dataset, info, episode, camera.rgb_key
+    )
+    depth_source, depth_start = episode_video_source(
+        dataset, info, episode, camera.depth_key
+    )
+    invalid_code = quantized_code_for_depth_value(
+        camera.invalid_value,
+        camera.depth_unit,
+        camera.depth_min,
+        camera.depth_max,
+        camera.depth_shift,
+        camera.depth_use_log,
+    )
+
+    print(
+        f"Generating RGB point cloud: {camera.camera_name} "
+        f"({camera.width}x{camera.height}, stride {stride})..."
+    )
+    total_points = 0
+    with FFmpegRawVideoReader(
+        depth_source,
+        depth_start,
+        table.num_rows,
+        "gray12le",
+        (camera.height, camera.width),
+        "<u2",
+    ) as depth_reader, FFmpegRawVideoReader(
+        rgb_source,
+        rgb_start,
+        table.num_rows,
+        "rgb24",
+        (camera.height, camera.width, 3),
+        np.uint8,
+    ) as rgb_reader:
+        for frame_index, timestamp in enumerate(timestamps):
+            quantized = depth_reader.read_frame(frame_index)
+            rgb = rgb_reader.read_frame(frame_index)
+            depth_metres = dequantize_depth_codes(
+                quantized,
+                camera.depth_min,
+                camera.depth_max,
+                camera.depth_shift,
+                camera.depth_use_log,
+            )
+            points, colors = backproject_rgbd_to_world(
+                depth_metres,
+                rgb,
+                intrinsics[frame_index],
+                camera_to_base[frame_index],
+                stride,
+                valid_mask=quantized != invalid_code,
+            )
+            rr.set_time(TIMELINE, duration=float(timestamp))
+            rr.log(camera.entity_path, rr.Points3D(points, colors=colors))
+            total_points += len(points)
+        depth_reader.finish()
+        rgb_reader.finish()
+
+    average_points = total_points / max(table.num_rows, 1)
+    print(
+        f"Loaded RGB point cloud: {camera.camera_name} "
+        f"({average_points:.0f} points/frame average)"
+    )
+
+
+def log_point_clouds(
+    dataset: Path,
+    info: dict[str, Any],
+    episode: dict[str, Any],
+    table: pa.Table,
+    timestamps: np.ndarray,
+    stride: int,
+) -> list[str]:
+    """Log all compatible RGB-D streams and return their entity paths."""
+    cameras, issues = discover_point_cloud_cameras(info, table)
+    for issue in issues:
+        print(f"Warning: {issue}")
+    if not cameras:
+        raise SystemExit(
+            "--point-cloud was requested, but no paired RGB-D stream with "
+            "per-frame calibration was found"
+        )
+
+    entity_paths: list[str] = []
+    for camera in cameras:
+        # Points have already been transformed numerically into the base frame.
+        # Rerun still needs an explicit named-frame edge for every entity that
+        # carries spatial data; a CoordinateFrame on the parent entity is not
+        # inherited by its children.
+        rr.log(
+            camera.entity_path,
+            rr.CoordinateFrame(camera.frame_name),
+            rr.Transform3D(
+                translation=[0.0, 0.0, 0.0],
+                mat3x3=np.eye(3),
+                relation=rr.TransformRelation.ParentFromChild,
+                parent_frame=CAMERA_BASE_FRAME,
+                child_frame=camera.frame_name,
+            ),
+            static=True,
+        )
+        try:
+            log_point_cloud_camera(
+                dataset,
+                info,
+                episode,
+                table,
+                timestamps,
+                camera,
+                stride,
+            )
+        except (ValueError, RuntimeError) as error:
+            raise SystemExit(
+                f"Failed to generate point cloud for {camera.camera_name}: {error}"
+            ) from error
+        entity_paths.append(camera.entity_path)
+    return entity_paths
 
 
 def extract_video_clip(
@@ -1483,7 +2109,9 @@ def make_blueprint(
     signal_views: list[tuple[str, str]],
     robot_replay: bool = False,
     calibrated_camera: CameraCalibration | None = None,
+    point_cloud_paths: list[str] | None = None,
 ) -> rrb.Blueprint:
+    point_cloud_paths = point_cloud_paths or []
     rgb_views: list[Any] = [
         rrb.Spatial2DView(origin=path, name=name)
         for name, path, is_depth in video_views
@@ -1496,8 +2124,12 @@ def make_blueprint(
     ]
     all_camera_views = rgb_views + depth_views
 
-    if robot_replay:
-        robot_view = rrb.Spatial3DView(origin=ROBOT_ENTITY_PATH, name="Robot replay")
+    if robot_replay or point_cloud_paths:
+        spatial_view_name = "Robot replay" if robot_replay else "Scene point cloud"
+        robot_view = rrb.Spatial3DView(
+            origin=ROBOT_ENTITY_PATH,
+            name=spatial_view_name,
+        )
         robot_area: Any = robot_view
         if calibrated_camera is not None:
             calibrated_view = rrb.Spatial2DView(
@@ -1585,6 +2217,13 @@ def log_episode_info(
     rr.log("episode_info", rr.TextDocument(document, media_type=rr.MediaType.MARKDOWN), static=True)
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     script_root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
@@ -1603,7 +2242,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--episode", type=int, default=0, help="Episode index")
     parser.add_argument(
-        "--no-video", action="store_true", help="Only load numeric signals"
+        "--no-video",
+        action="store_true",
+        help="Do not add 2D video views (point-cloud decoding remains available)",
+    )
+    parser.add_argument(
+        "--point-cloud",
+        action="store_true",
+        help="Reconstruct paired RGB-D streams in the dataset world/base frame",
+    )
+    parser.add_argument(
+        "--point-cloud-stride",
+        type=positive_int,
+        default=DEFAULT_POINT_CLOUD_STRIDE,
+        metavar="N",
+        help="Sample every Nth depth/RGB pixel along each image axis",
     )
     robot_group = parser.add_mutually_exclusive_group()
     robot_group.add_argument(
@@ -1733,6 +2386,18 @@ def main() -> None:
             recording,
             script_root,
         )
+        point_cloud_paths: list[str] = []
+        if args.point_cloud:
+            if not robot_replay:
+                log_robot_footprint_frame()
+            point_cloud_paths = log_point_clouds(
+                dataset,
+                info,
+                episode,
+                table,
+                timestamps,
+                args.point_cloud_stride,
+            )
         if calibrated_camera is not None:
             if not robot_replay:
                 raise SystemExit(
@@ -1745,6 +2410,7 @@ def main() -> None:
                 signal_views,
                 robot_replay,
                 calibrated_camera,
+                point_cloud_paths,
             )
         )
         recording.flush()
