@@ -173,6 +173,17 @@ python visualize_lerobot_rerun.py \
   --camera-resolution 480 640
 ```
 
+查看RoboTwin 示例：
+
+```bash
+python visualize_lerobot_rerun.py \
+  --root assets/example/RoboTwin2 \
+  --episode 0 \
+  --camera-calibration caliberations/robotwin.yaml \
+  --camera-resolution 240 320 \
+  --point-cloud
+```
+
 ![标定视角回放](assets/images/caliball.gif)
 
 YAML 中的 `extrinsic` 按以下方式解释：
