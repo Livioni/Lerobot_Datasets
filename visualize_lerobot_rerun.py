@@ -41,6 +41,7 @@ DEFAULT_RERUN_PORT = 9876
 PIPER_ROBOT_TYPE = "agilex_piper_bimanual"
 ARX5_ROBOT_TYPE = "unified_robot"
 PIPER_STATE_FEATURE = "observation.state"
+PIPER_LEADER_FEATURE = "action"
 ROBOT_ENTITY_PATH = "robot"
 ROBOT_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/joint_transforms"
 ROBOT_STATIC_TRANSFORMS_ENTITY_PATH = f"{ROBOT_ENTITY_PATH}/tf_static"
@@ -69,8 +70,11 @@ ARX5_WORLD_TO_BASE_TRANSLATION = np.array(
     dtype=np.float64,
 )
 PIPER_GRIPPER_JOINT_NAMES = {
-    *(f"fl_joint{index}" for index in (7, 8)),
-    *(f"fr_joint{index}" for index in (7, 8)),
+    *(
+        f"{prefix}_joint{index}"
+        for prefix in ("fl", "fr", "bl", "br")
+        for index in (7, 8)
+    ),
 }
 # Piper gripper: joint7 gets +width/2, joint8 gets -width/2 (opposing limits).
 # Arx5 gripper: both fingers get +width/2 (both limits are [0, upper]).
@@ -1166,21 +1170,21 @@ def log_videos(
     return views
 
 
-def piper_state_indices(
-    info: dict[str, Any], table: pa.Table
+def piper_feature_indices(
+    info: dict[str, Any], table: pa.Table, feature_key: str
 ) -> tuple[dict[str, int] | None, str | None]:
-    """Validate the Piper state schema and return component indexes by name."""
+    """Validate a named Piper joint feature and return indexes by component."""
     if info.get("robot_type") != PIPER_ROBOT_TYPE:
         return None, f"robot_type is not {PIPER_ROBOT_TYPE}"
-    if PIPER_STATE_FEATURE not in table.column_names:
-        return None, f"{PIPER_STATE_FEATURE} is missing from episode data"
+    if feature_key not in table.column_names:
+        return None, f"{feature_key} is missing from episode data"
 
-    feature = info.get("features", {}).get(PIPER_STATE_FEATURE)
+    feature = info.get("features", {}).get(feature_key)
     if not isinstance(feature, dict):
-        return None, f"{PIPER_STATE_FEATURE} metadata is missing"
+        return None, f"{feature_key} metadata is missing"
     names = raw_feature_component_names(feature)
     if not names:
-        return None, f"{PIPER_STATE_FEATURE} component names do not match its shape"
+        return None, f"{feature_key} component names do not match its shape"
 
     required = [
         *(f"left_joint_{index}" for index in range(1, 7)),
@@ -1190,8 +1194,15 @@ def piper_state_indices(
     ]
     missing = [name for name in required if name not in names]
     if missing:
-        return None, "missing state components: " + ", ".join(missing)
+        return None, "missing components: " + ", ".join(missing)
     return {name: names.index(name) for name in required}, None
+
+
+def piper_state_indices(
+    info: dict[str, Any], table: pa.Table
+) -> tuple[dict[str, int] | None, str | None]:
+    """Validate the Piper observation schema used by the follower arms."""
+    return piper_feature_indices(info, table, PIPER_STATE_FEATURE)
 
 
 def arx5_state_indices(
@@ -1357,7 +1368,7 @@ def patch_dae_textures(
 def prepare_follower_visual_urdf(
     source: Path,
     destination: Path,
-    strip_prefixes: tuple[str, ...] = ("bl_", "br_"),
+    strip_prefixes: tuple[str, ...] = (),
     strip_link_names: frozenset[str] = frozenset(),
     patch_dae: bool = False,
     mesh_overrides: Mapping[str, str] | None = None,
@@ -1365,7 +1376,7 @@ def prepare_follower_visual_urdf(
     box_overrides: Mapping[str, tuple[float, float, float]] | None = None,
     material_overrides: Mapping[str, tuple[float, float, float, float]] | None = None,
 ) -> None:
-    """Create a follower-only URDF while preserving the source mesh transforms.
+    """Create a replay URDF while preserving the source mesh transforms.
 
     Visuals are stripped from links whose names start with any prefix in
     *strip_prefixes* or match an entry in *strip_link_names*.  Collision
@@ -1895,7 +1906,7 @@ def log_piper_robot_replay(
     recording: rr.RecordingStream,
     package_root: Path,
     gripper_signs: tuple[float, float] = PIPER_GRIPPER_SIGNS,
-    strip_prefixes: tuple[str, ...] = ("bl_", "br_"),
+    strip_prefixes: tuple[str, ...] = (),
     strip_link_names: frozenset[str] = frozenset(),
     patch_dae: bool = False,
     mesh_overrides: Mapping[str, str] | None = None,
@@ -1904,8 +1915,13 @@ def log_piper_robot_replay(
     material_overrides: Mapping[str, tuple[float, float, float, float]] | None = None,
     gripper_mode: str = "width",
     tcp_offset_from_finger_origins: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    leader_state_indices: dict[str, int] | None = None,
 ) -> None:
-    """Log follower geometry and animated bimanual joint transforms.
+    """Log complete robot geometry and available animated arm transforms.
+
+    The Piper ``bl_``/``br_`` leader arms are driven by ``action`` when its
+    named components are available. Otherwise they remain visible at their
+    default URDF joint positions.
 
     *gripper_mode* selects how the gripper state value is interpreted:
 
@@ -1916,7 +1932,7 @@ def log_piper_robot_replay(
       closed; each finger moves by ``value * joint_upper_limit``.
     """
     prepend_ros_package_path(package_root)
-    prepared_urdf = temporary_directory / "aloha_follower_visual.urdf"
+    prepared_urdf = temporary_directory / "aloha_robot_visual.urdf"
     prepare_follower_visual_urdf(
         urdf_path,
         prepared_urdf,
@@ -1942,6 +1958,13 @@ def log_piper_robot_replay(
         *(f"fl_joint{index}" for index in range(1, 9)),
         *(f"fr_joint{index}" for index in range(1, 9)),
     ]
+    if leader_state_indices is not None:
+        joint_names.extend(
+            [
+                *(f"bl_joint{index}" for index in range(1, 9)),
+                *(f"br_joint{index}" for index in range(1, 9)),
+            ]
+        )
     missing_joints = [
         name for name in joint_names if urdf_tree.get_joint_by_name(name) is None
     ]
@@ -1966,48 +1989,83 @@ def log_piper_robot_replay(
 
     time_column = rr.TimeColumn(TIMELINE, duration=timestamps)
     gripper_was_clipped = False
-    for dataset_side, urdf_prefix in (("left", "fl"), ("right", "fr")):
-        for joint_index in range(1, 7):
-            component = f"{dataset_side}_joint_{joint_index}"
-            joint = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}")
-            assert joint is not None
-            rr.send_columns(
-                ROBOT_TRANSFORMS_ENTITY_PATH,
-                indexes=[time_column],
-                columns=joint.compute_transform_columns(
-                    state_values[:, state_indices[component]], clamp=True
-                ),
-            )
 
-        gripper_width = state_values[:, state_indices[f"{dataset_side}_gripper"]]
-        if gripper_mode == "normalized":
-            # Binary [0,1] scalar: 1 = fully open (joint upper limit).
-            joint7 = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint7")
-            assert joint7 is not None
-            upper = joint7.limit_upper if joint7.limit_upper is not None else 0.04
-            positive_position = np.clip(gripper_width, 0.0, 1.0) * float(upper)
-            negative_position = -positive_position
-            was_clipped = False
-        else:
-            positive_position, negative_position, was_clipped = (
-                gripper_finger_positions(gripper_width)
+    def log_arm_pair(
+        values: np.ndarray,
+        component_indices: dict[str, int],
+        prefixes: tuple[tuple[str, str], tuple[str, str]],
+    ) -> None:
+        nonlocal gripper_was_clipped
+        for dataset_side, urdf_prefix in prefixes:
+            for joint_index in range(1, 7):
+                component = f"{dataset_side}_joint_{joint_index}"
+                joint = urdf_tree.get_joint_by_name(
+                    f"{urdf_prefix}_joint{joint_index}"
+                )
+                assert joint is not None
+                rr.send_columns(
+                    ROBOT_TRANSFORMS_ENTITY_PATH,
+                    indexes=[time_column],
+                    columns=joint.compute_transform_columns(
+                        values[:, component_indices[component]], clamp=True
+                    ),
+                )
+
+            gripper_width = values[
+                :, component_indices[f"{dataset_side}_gripper"]
+            ]
+            if gripper_mode == "normalized":
+                # Binary [0,1] scalar: 1 = fully open (joint upper limit).
+                joint7 = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint7")
+                assert joint7 is not None
+                upper = joint7.limit_upper if joint7.limit_upper is not None else 0.04
+                positive_position = np.clip(gripper_width, 0.0, 1.0) * float(upper)
+                was_clipped = False
+            else:
+                positive_position, _, was_clipped = gripper_finger_positions(
+                    gripper_width
+                )
+            gripper_was_clipped = gripper_was_clipped or was_clipped
+            joint7_value = positive_position * gripper_signs[0]
+            joint8_value = positive_position * gripper_signs[1]
+            for joint_index, joint_values in (
+                (7, joint7_value),
+                (8, joint8_value),
+            ):
+                joint = urdf_tree.get_joint_by_name(
+                    f"{urdf_prefix}_joint{joint_index}"
+                )
+                assert joint is not None
+                rr.send_columns(
+                    ROBOT_TRANSFORMS_ENTITY_PATH,
+                    indexes=[time_column],
+                    # The feature stores the complete finger-to-finger opening.
+                    # Do not clamp each half to the narrower visual-URDF limits.
+                    columns=joint.compute_transform_columns(joint_values, clamp=False),
+                )
+
+    log_arm_pair(
+        state_values,
+        state_indices,
+        (("left", "fl"), ("right", "fr")),
+    )
+
+    if leader_state_indices is not None:
+        leader_values = np.asarray(
+            table[PIPER_LEADER_FEATURE].to_pylist(), dtype=np.float64
+        )
+        if leader_values.ndim != 2 or leader_values.shape[0] != len(timestamps):
+            raise RuntimeError(
+                f"Unexpected {PIPER_LEADER_FEATURE} shape {leader_values.shape}; "
+                f"expected ({len(timestamps)}, components)"
             )
-        gripper_was_clipped = gripper_was_clipped or was_clipped
-        joint7_value = positive_position * gripper_signs[0]
-        joint8_value = positive_position * gripper_signs[1]
-        for joint_index, values in (
-            (7, joint7_value),
-            (8, joint8_value),
-        ):
-            joint = urdf_tree.get_joint_by_name(f"{urdf_prefix}_joint{joint_index}")
-            assert joint is not None
-            rr.send_columns(
-                ROBOT_TRANSFORMS_ENTITY_PATH,
-                indexes=[time_column],
-                # The state stores the complete finger-to-finger opening in meters.
-                # Do not clamp each half to the narrower limits in this visual URDF.
-                columns=joint.compute_transform_columns(values, clamp=False),
-            )
+        if not np.all(np.isfinite(leader_values)):
+            raise RuntimeError(f"{PIPER_LEADER_FEATURE} contains non-finite values")
+        log_arm_pair(
+            leader_values,
+            leader_state_indices,
+            (("left", "bl"), ("right", "br")),
+        )
 
     if gripper_was_clipped:
         print(
@@ -2084,7 +2142,9 @@ def maybe_log_robot_replay(
     else:
         package_root = script_root / "embodiments"
         gripper_signs = PIPER_GRIPPER_SIGNS
-        strip_prefixes = ("bl_", "br_")
+        # Keep the rear leader arms visible. They are driven from action below
+        # when that feature is compatible with the Piper joint schema.
+        strip_prefixes = ()
         strip_link_names = frozenset()
         patch_dae = False
         mesh_overrides = {}
@@ -2093,6 +2153,17 @@ def maybe_log_robot_replay(
         material_overrides = {}
         gripper_mode = "width"
         tcp_offset_from_finger_origins = (0.0, 0.0, 0.0)
+
+    leader_state_indices: dict[str, int] | None = None
+    if profile == "piper":
+        leader_state_indices, leader_incompatibility = piper_feature_indices(
+            info, table, PIPER_LEADER_FEATURE
+        )
+        if leader_state_indices is None:
+            print(
+                "Warning: leader arms will use their default URDF pose: "
+                f"{leader_incompatibility}"
+            )
 
     try:
         log_piper_robot_replay(
@@ -2113,6 +2184,7 @@ def maybe_log_robot_replay(
             material_overrides=material_overrides,
             gripper_mode=gripper_mode,
             tcp_offset_from_finger_origins=tcp_offset_from_finger_origins,
+            leader_state_indices=leader_state_indices,
         )
     except RuntimeError as error:
         if explicit_urdf:
