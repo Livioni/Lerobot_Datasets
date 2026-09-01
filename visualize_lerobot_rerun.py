@@ -130,14 +130,15 @@ class CameraCalibration:
 
 @dataclass(frozen=True)
 class PointCloudCamera:
-    """One paired RGB-D stream with per-frame OpenCV calibration."""
+    """One paired RGB-D stream with dynamic or static OpenCV calibration."""
 
     camera_name: str
     rgb_key: str
     depth_key: str
-    intrinsic_key: str
+    intrinsic_key: str | None
     camera_pose_key: str | None
     extrinsic_key: str | None
+    static_calibration: CameraCalibration | None
     height: int
     width: int
     depth_min: float
@@ -397,7 +398,17 @@ def load_episode_data(
     )
     data_path = dataset / relative_path
     if not data_path.is_file():
-        raise SystemExit(f"Episode data file is missing: {data_path}")
+        # Some early v3 exports accidentally omitted the leading ``data/``
+        # directory while keeping the canonical path in meta/info.json.
+        fallback_path = None
+        if relative_path.parts and relative_path.parts[0] == "data":
+            fallback_path = dataset.joinpath(*relative_path.parts[1:])
+        if fallback_path is None or not fallback_path.is_file():
+            raise SystemExit(f"Episode data file is missing: {data_path}")
+        print(
+            f"Warning: episode data is stored at {fallback_path}; expected {data_path}"
+        )
+        data_path = fallback_path
     return pq.read_table(
         data_path,
         filters=[("episode_index", "=", int(episode["episode_index"]))],
@@ -487,15 +498,18 @@ def log_signals(
 
 
 def discover_point_cloud_cameras(
-    info: dict[str, Any], table: pa.Table
+    info: dict[str, Any],
+    table: pa.Table,
+    static_calibrations: Mapping[str, CameraCalibration] | None = None,
 ) -> tuple[list[PointCloudCamera], list[str]]:
-    """Discover paired RGB-D streams with per-frame calibration columns."""
+    """Discover RGB-D streams with per-frame or static YAML calibration."""
     features = info.get("features", {})
     if not isinstance(features, dict):
         return [], ["dataset feature metadata is not a dictionary"]
 
     cameras: list[PointCloudCamera] = []
     issues: list[str] = []
+    static_calibrations = static_calibrations or {}
     for depth_key, depth_feature in features.items():
         if not isinstance(depth_feature, dict) or depth_feature.get("dtype") != "video":
             continue
@@ -539,26 +553,36 @@ def discover_point_cloud_cameras(
 
         camera_name = rgb_key.rsplit(".", 1)[-1]
         calibration_prefix = f"calibration.{camera_name}"
-        intrinsic_key = f"{calibration_prefix}.intrinsic_matrix"
+        intrinsic_candidate = f"{calibration_prefix}.intrinsic_matrix"
         pose_candidate = f"{calibration_prefix}.camera_pose_matrix"
         extrinsic_candidate = f"{calibration_prefix}.extrinsic_matrix"
-        if intrinsic_key not in features or intrinsic_key not in table.column_names:
-            issues.append(f"skipping {depth_key}: missing {intrinsic_key}")
-            continue
-        camera_pose_key = (
-            pose_candidate
-            if pose_candidate in features and pose_candidate in table.column_names
-            else None
-        )
+        has_dynamic_intrinsic = intrinsic_candidate in table.column_names
+        camera_pose_key = pose_candidate if pose_candidate in table.column_names else None
         extrinsic_key = (
-            extrinsic_candidate
-            if extrinsic_candidate in features and extrinsic_candidate in table.column_names
-            else None
+            extrinsic_candidate if extrinsic_candidate in table.column_names else None
         )
-        if camera_pose_key is None and extrinsic_key is None:
+        static_calibration = static_calibrations.get(rgb_key)
+        has_dynamic_pose = camera_pose_key is not None or extrinsic_key is not None
+
+        if has_dynamic_intrinsic and has_dynamic_pose:
+            intrinsic_key: str | None = intrinsic_candidate
+            static_calibration = None
+        elif static_calibration is not None:
+            intrinsic_key = None
+            camera_pose_key = None
+            extrinsic_key = None
+            if (static_calibration.height, static_calibration.width) != depth_shape[:2]:
+                issues.append(
+                    f"skipping {depth_key}: static calibration resolution "
+                    f"{static_calibration.height}x{static_calibration.width} HxW does not "
+                    f"match video {depth_shape[0]}x{depth_shape[1]}"
+                )
+                continue
+        else:
             issues.append(
-                f"skipping {depth_key}: missing both {pose_candidate} and "
-                f"{extrinsic_candidate}"
+                f"skipping {depth_key}: missing complete per-frame calibration "
+                f"({intrinsic_candidate} plus {pose_candidate} or {extrinsic_candidate}) "
+                "and no matching static YAML calibration was supplied"
             )
             continue
 
@@ -621,6 +645,7 @@ def discover_point_cloud_cameras(
                 intrinsic_key=intrinsic_key,
                 camera_pose_key=camera_pose_key,
                 extrinsic_key=extrinsic_key,
+                static_calibration=static_calibration,
                 height=depth_shape[0],
                 width=depth_shape[1],
                 depth_min=depth_min,
@@ -768,7 +793,18 @@ def _matrix_series(
 def point_cloud_calibration_series(
     camera: PointCloudCamera, table: pa.Table
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load and validate per-frame intrinsics and camera-to-world poses."""
+    """Return intrinsics and camera poses in their world/base reference frame."""
+    if camera.static_calibration is not None:
+        calibration = camera.static_calibration
+        intrinsics = np.broadcast_to(
+            calibration.intrinsic, (table.num_rows, 3, 3)
+        ).copy()
+        camera_to_base = np.broadcast_to(
+            np.linalg.inv(calibration.base_to_camera), (table.num_rows, 4, 4)
+        ).copy()
+        return intrinsics, camera_to_base
+
+    assert camera.intrinsic_key is not None
     intrinsics = _matrix_series(table, camera.intrinsic_key, (3, 3))
     if np.any(intrinsics[:, 0, 0] <= 0.0) or np.any(intrinsics[:, 1, 1] <= 0.0):
         raise ValueError(f"{camera.intrinsic_key} contains non-positive focal lengths")
@@ -947,8 +983,11 @@ def log_point_cloud_camera(
                 f"{video_key} is {stream_fps} FPS but the dataset is {dataset_fps} FPS"
             )
 
-    intrinsics, camera_to_world = point_cloud_calibration_series(camera, table)
-    camera_to_base = point_cloud_world_to_base_transform(info) @ camera_to_world
+    intrinsics, camera_to_reference = point_cloud_calibration_series(camera, table)
+    if camera.static_calibration is not None:
+        camera_to_base = camera_to_reference
+    else:
+        camera_to_base = point_cloud_world_to_base_transform(info) @ camera_to_reference
     rgb_source, rgb_start = episode_video_source(
         dataset, info, episode, camera.rgb_key
     )
@@ -1022,15 +1061,16 @@ def log_point_clouds(
     table: pa.Table,
     timestamps: np.ndarray,
     stride: int,
+    static_calibrations: Mapping[str, CameraCalibration] | None = None,
 ) -> list[str]:
     """Log all compatible RGB-D streams and return their entity paths."""
-    cameras, issues = discover_point_cloud_cameras(info, table)
+    cameras, issues = discover_point_cloud_cameras(info, table, static_calibrations)
     for issue in issues:
         print(f"Warning: {issue}")
     if not cameras:
         raise SystemExit(
             "--point-cloud was requested, but no paired RGB-D stream with "
-            "per-frame calibration was found"
+            "per-frame or supplied static calibration was found"
         )
 
     entity_paths: list[str] = []
@@ -2228,7 +2268,7 @@ def make_blueprint(
                 origin=calibrated_camera.entity_path,
                 contents=[f"/{ROBOT_ENTITY_PATH}/**"],
                 name=(
-                    f"Main camera replay "
+                    f"{calibrated_camera.camera_name} replay "
                     f"({calibrated_camera.width}x{calibrated_camera.height})"
                 ),
                 visual_bounds=rrb.VisualBounds2D(
@@ -2369,7 +2409,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help=(
             "YAML calibration whose extrinsic maps robot-base points into the "
-            "OpenCV camera frame; adds a tracked camera-view robot replay"
+            "OpenCV camera frame; adds a tracked camera-view robot replay and "
+            "provides static calibration for a matching RGB-D point cloud"
         ),
     )
     parser.add_argument(
@@ -2436,6 +2477,12 @@ def main() -> None:
         except ValueError as error:
             raise SystemExit(str(error)) from error
 
+    point_cloud_calibrations = (
+        {calibrated_camera.feature_key: calibrated_camera}
+        if calibrated_camera is not None
+        else None
+    )
+
     timestamps = np.asarray(table["timestamp"].to_numpy(), dtype=np.float64)
     timestamps -= timestamps[0]
 
@@ -2489,6 +2536,7 @@ def main() -> None:
                 table,
                 timestamps,
                 args.point_cloud_stride,
+                point_cloud_calibrations,
             )
         if calibrated_camera is not None:
             if not robot_replay:

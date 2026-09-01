@@ -138,7 +138,7 @@ python visualize_lerobot_rerun.py \
 
 ## Base 坐标系 RGB-D 点云
 
-传入 `--point-cloud` 后，脚本会发现兼容的 LeRobot v3 RGB-D 数据。名为 `observation.images.<camera>_depth` 的深度流会与 `observation.images.<camera>` RGB 流，以及逐帧的 `calibration.<camera>.intrinsic_matrix`、`camera_pose_matrix`（或 `extrinsic_matrix` 的逆矩阵）配对。三路点云在现有机器人三维视图中共同显示，同时保留在 `robot/scene_point_cloud` 下分别开关的能力。
+传入 `--point-cloud` 后，脚本会发现兼容的 LeRobot v3 RGB-D 数据。名为 `observation.images.<camera>_depth` 的深度流会与 `observation.images.<camera>` RGB 流，以及逐帧的 `calibration.<camera>.intrinsic_matrix`、`camera_pose_matrix`（或 `extrinsic_matrix` 的逆矩阵）配对。缺少这些列时，`--camera-calibration` 会为同名相机提供静态 base→camera YAML 标定。各路点云在现有机器人三维视图中共同显示，同时保留在 `robot/scene_point_cloud` 下分别开关的能力。
 
 深度值直接从原始高位深视频解码，并使用 `meta/info.json` 中的量化参数恢复为米。RGB 与深度使用完全相同的采样行列。默认 `--point-cloud-stride 2`，因此 320×240 相机每帧最多产生 19,200 个点，RoboTwin2 三路合计最多 57,600 个点。使用 `--point-cloud-stride 1` 可恢复全分辨率，增大步长则可降低记录体积和查看器负担。
 
@@ -163,26 +163,39 @@ v3.0 可视化脚本目前识别两类状态配置：
 
 ## 标定相机视角回放
 
-使用 [`caliberations/w2_demo.yaml`](caliberations/w2_demo.yaml) 中的标定，从固定主相机视角查看 W2 示例：
+使用 [`calibrations/w2_demo.yaml`](calibrations/w2_demo.yaml) 中的标定，从固定主相机视角查看 W2 示例：
 
 ```bash
 python visualize_lerobot_rerun.py \
   --root assets/example/W2 \
   --episode 0 \
-  --camera-calibration caliberations/w2_demo.yaml \
+  --camera-calibration calibrations/w2_demo.yaml \
   --camera-resolution 480 640
 ```
 
-查看RoboTwin 示例：
+查看 RoboTwin 示例：
 
 ```bash
 python visualize_lerobot_rerun.py \
   --root assets/example/RoboTwin2 \
   --episode 0 \
-  --camera-calibration caliberations/robotwin.yaml \
+  --camera-calibration calibrations/robotwin.yaml \
   --camera-resolution 240 320 \
   --point-cloud
 ```
+
+含第四路 `cam_third_view`、但没有逐帧相机矩阵的 RoboTwin 数据，可以使用静态第三视角标定：
+
+```bash
+python visualize_lerobot_rerun.py \
+  --root assets/example/RoboTwin2_random \
+  --episode 0 \
+  --camera-calibration calibrations/robotwin_third_view.yaml \
+  --camera-resolution 240 320 \
+  --point-cloud
+```
+
+此时 RGB 与 Depth 面板会自动包含 `cam_third_view` 和 `cam_third_view_depth`，第三视角彩色点云位于 `robot/scene_point_cloud/cam_third_view`。`--camera-calibration` 同时控制唯一的标定回放视角，并在该 RGB-D 流缺少逐帧相机矩阵时提供静态点云标定；数据集自带的逐帧标定仍然优先。
 
 ![标定视角回放](assets/images/caliball.gif)
 
@@ -192,6 +205,6 @@ YAML 中的 `extrinsic` 按以下方式解释：
 p_camera = T_camera_base @ p_base
 ```
 
-它会把机器人 `footprint` 坐标系中的点转换到 OpenCV 相机坐标系（`+X` 向右、`+Y` 向下、`+Z` 向前）。脚本会求逆得到相机在 base 坐标系中的位姿。Rerun 首先打开 `Main camera replay (640x480)` 标签页，同时保留自由视角的 `Robot replay` 标签页用于对照。
+它会把机器人 `footprint` 坐标系中的点转换到 OpenCV 相机坐标系（`+X` 向右、`+Y` 向下、`+Z` 向前）。脚本会求逆得到相机在 base 坐标系中的位姿。Rerun 使用相机字段名命名标定回放标签页，同时保留自由视角的 `Robot replay` 标签页用于对照。
 
 `--camera-resolution` 的参数顺序为 `HEIGHT WIDTH`。当标定文件中只有一个相机时，脚本会自动推断 `--camera-feature`。

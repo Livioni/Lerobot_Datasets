@@ -138,7 +138,7 @@ python visualize_lerobot_rerun.py \
 
 ## RGB-D point clouds in the base frame
 
-Pass `--point-cloud` to discover compatible LeRobot v3 RGB-D pairs. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.
+Pass `--point-cloud` to discover compatible LeRobot v3 RGB-D pairs. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). When those columns are absent, `--camera-calibration` supplies static base-to-camera calibration for its matching stream. The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.
 
 Depth is decoded from the original high-bit-depth video with the quantization settings in `meta/info.json`. Each RGB pixel uses the same sampled row and column as its depth value. The default stride is `2`, so a 320×240 camera contributes at most 19,200 points per frame and the three RoboTwin2 cameras contribute at most 57,600 points. Use `--point-cloud-stride 1` for full resolution or a larger value for lighter recordings.
 
@@ -161,14 +161,25 @@ The visualizer prepends the `embodiments/` package directory to `ROS_PACKAGE_PAT
 
 ## Calibrated camera replay
 
-Use [`caliberations/w2_demo.yaml`](caliberations/w2_demo.yaml) to inspect the W2 example from a fixed main-camera viewpoint:
+Use [`calibrations/w2_demo.yaml`](calibrations/w2_demo.yaml) to inspect the W2 example from a fixed main-camera viewpoint:
 
 ```bash
 python visualize_lerobot_rerun.py \
   --root assets/example/W2 \
   --episode 0 \
-  --camera-calibration caliberations/w2_demo.yaml \
+  --camera-calibration calibrations/w2_demo.yaml \
   --camera-resolution 480 640
+```
+
+For a RoboTwin export with the additional `cam_third_view` RGB-D stream but no per-frame camera matrices:
+
+```bash
+python visualize_lerobot_rerun.py \
+  --root assets/example/RoboTwin2_random \
+  --episode 0 \
+  --camera-calibration calibrations/robotwin_third_view.yaml \
+  --camera-resolution 240 320 \
+  --point-cloud
 ```
 
 
@@ -180,6 +191,6 @@ The YAML `extrinsic` is interpreted as:
 p_camera = T_camera_base @ p_base
 ```
 
-It maps points from the robot `footprint` frame into the OpenCV camera frame (`+X` right, `+Y` down, `+Z` forward). The script inverts this transform to recover the camera pose in the base frame. Rerun opens the `Main camera replay (640x480)` tab first and keeps the free-view `Robot replay` tab for comparison.
+It maps points from the robot `footprint` frame into the OpenCV camera frame (`+X` right, `+Y` down, `+Z` forward). The script inverts this transform to recover the camera pose in the base frame. Rerun names the calibrated replay tab after the camera feature and keeps the free-view `Robot replay` tab for comparison.
 
 `--camera-resolution` uses `HEIGHT WIDTH` order. If a calibration file contains exactly one camera, `--camera-feature` is inferred automatically.
