@@ -776,6 +776,65 @@ def point_cloud_world_to_base_transform(info: dict[str, Any]) -> np.ndarray:
     return transform
 
 
+def validate_camera_calibration_against_episode(
+    calibration: CameraCalibration,
+    info: dict[str, Any],
+    table: pa.Table,
+) -> None:
+    """Reject a static YAML calibration that conflicts with episode matrices."""
+    feature = info.get("features", {}).get(calibration.feature_key)
+    if isinstance(feature, dict):
+        shape = tuple(int(value) for value in feature.get("shape", ()))
+        if len(shape) >= 2 and (calibration.height, calibration.width) != shape[:2]:
+            raise ValueError(
+                f"Camera calibration resolution {calibration.height}x{calibration.width} "
+                f"HxW does not match {calibration.feature_key} resolution "
+                f"{shape[0]}x{shape[1]}"
+            )
+
+    camera_name = calibration.feature_key.rsplit(".", 1)[-1]
+    prefix = f"calibration.{camera_name}"
+    intrinsic_key = f"{prefix}.intrinsic_matrix"
+    pose_key = f"{prefix}.camera_pose_matrix"
+    extrinsic_key = f"{prefix}.extrinsic_matrix"
+    if intrinsic_key not in table.column_names:
+        return
+    if pose_key in table.column_names:
+        camera_to_world = np.asarray(table[pose_key][0].as_py(), dtype=np.float64)
+        try:
+            world_to_camera = np.linalg.inv(camera_to_world)
+        except np.linalg.LinAlgError as error:
+            raise ValueError(f"{pose_key} first frame is singular") from error
+    elif extrinsic_key in table.column_names:
+        world_to_camera = np.asarray(
+            table[extrinsic_key][0].as_py(), dtype=np.float64
+        )
+    else:
+        return
+
+    intrinsic = np.asarray(table[intrinsic_key][0].as_py(), dtype=np.float64)
+    world_to_base = point_cloud_world_to_base_transform(info)
+    try:
+        base_to_world = np.linalg.inv(world_to_base)
+    except np.linalg.LinAlgError as error:
+        raise ValueError("Dataset world-to-base transform is singular") from error
+    episode_base_to_camera = world_to_camera @ base_to_world
+
+    intrinsic_delta = float(np.max(np.abs(calibration.intrinsic - intrinsic)))
+    extrinsic_delta = float(
+        np.max(np.abs(calibration.base_to_camera - episode_base_to_camera))
+    )
+    if intrinsic_delta > 1e-3 or extrinsic_delta > 1e-4:
+        raise ValueError(
+            f"Camera calibration for {calibration.feature_key} conflicts with episode "
+            f"matrices (max intrinsic delta {intrinsic_delta:.6g}, "
+            f"max extrinsic delta {extrinsic_delta:.6g})"
+        )
+    print(
+        f"Validated camera calibration against episode: {calibration.feature_key}"
+    )
+
+
 def _matrix_series(
     table: pa.Table, feature_key: str, matrix_shape: tuple[int, int]
 ) -> np.ndarray:
@@ -2473,6 +2532,9 @@ def main() -> None:
                 args.camera_feature,
                 args.camera_resolution[0],
                 args.camera_resolution[1],
+            )
+            validate_camera_calibration_against_episode(
+                calibrated_camera, info, table
             )
         except ValueError as error:
             raise SystemExit(str(error)) from error

@@ -140,7 +140,7 @@ python visualize_lerobot_rerun.py \
 
 传入 `--point-cloud` 后，脚本会发现兼容的 LeRobot v3 RGB-D 数据。名为 `observation.images.<camera>_depth` 的深度流会与 `observation.images.<camera>` RGB 流，以及逐帧的 `calibration.<camera>.intrinsic_matrix`、`camera_pose_matrix`（或 `extrinsic_matrix` 的逆矩阵）配对。缺少这些列时，`--camera-calibration` 会为同名相机提供静态 base→camera YAML 标定。各路点云在现有机器人三维视图中共同显示，同时保留在 `robot/scene_point_cloud` 下分别开关的能力。
 
-深度值直接从原始高位深视频解码，并使用 `meta/info.json` 中的量化参数恢复为米。RGB 与深度使用完全相同的采样行列。默认 `--point-cloud-stride 2`，因此 320×240 相机每帧最多产生 19,200 个点，RoboTwin2 三路合计最多 57,600 个点。使用 `--point-cloud-stride 1` 可恢复全分辨率，增大步长则可降低记录体积和查看器负担。
+深度值直接从原始高位深视频解码，并使用 `meta/info.json` 中的量化参数恢复为米。RGB 与深度使用完全相同的采样行列。默认 `--point-cloud-stride 2`，因此 320×240 相机每帧最多产生 19,200 个点：三路相机合计最多 57,600 个点，`RoboTwin2_third_view` 四路相机合计最多 76,800 个点。使用 `--point-cloud-stride 1` 可恢复全分辨率，增大步长则可降低记录体积和查看器负担。
 
 点云最终以机器人 base/URDF `footprint` 为参考系。对于 RoboTwin/Arx5 的 `unified_robot` 数据，数据集 `world` 的 `+Y` 对应 URDF `footprint` 的 `+X`，并且两个原点相差 0.65 m；脚本会自动施加 `world → footprint` 变换 `(x, y, z) → (y + 0.65, -x, z)`，即绕 `+Z` 顺时针旋转 90° 后沿 base `+X` 平移 0.65 m。该变换通过逐帧匹配左右腕部相机标定位置与 URDF 正向运动学位置得到。其他机器人类型暂按 `world` 与 `footprint` 对齐处理。`--no-video --point-cloud` 会隐藏二维相机面板但继续生成点云；`--no-robot --point-cloud` 可以不加载 URDF，仅显示重建场景。
 
@@ -184,11 +184,11 @@ python visualize_lerobot_rerun.py \
   --point-cloud
 ```
 
-含第四路 `cam_third_view`、但没有逐帧相机矩阵的 RoboTwin 数据，可以使用静态第三视角标定：
+含第四路 `cam_third_view` 的 RoboTwin 数据可以使用第三视角标定：
 
 ```bash
 python visualize_lerobot_rerun.py \
-  --root assets/example/RoboTwin2_random \
+  --root assets/example/RoboTwin2_third_view \
   --episode 0 \
   --camera-calibration calibrations/robotwin_third_view.yaml \
   --camera-resolution 240 320 \

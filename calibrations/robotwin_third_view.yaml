@@ -1,17 +1,17 @@
-# RoboTwin2 front_camera, exported as observation.images.cam_third_view.
-# Source: 4d_datasets/adjust_bottle/episode_0000000/{intrinsics,extrinsics}/third_views.npy.
-# The source world->camera matrix is constant across all 156 frames. It is
-# composed with the RoboTwin footprint->world robot pose here so that this
+# RoboTwin2 observer camera, exported as observation.images.cam_third_view.
+# Source: assets/example/RoboTwin2_third_view per-frame calibration columns.
+# The source world->camera matrix is constant across all 150 frames. It is
+# composed with the RoboTwin footprint->world robot pose here, so this
 # extrinsic maps robot footprint/base points into OpenCV camera coordinates.
 cameras:
   observation.images.cam_third_view:
     extrinsic:
-    - [0.000000119209290, -1.000000119209290, -0.000000003725290, -0.000000017881393]
-    - [-0.099503725767136, -0.000000003725290, -0.995037198066711, 0.865682427585125]
-    - [0.995037257671356, 0.000000119209290, -0.099503725767136, -0.114429280161858]
+    - [0.000000119209290, 1.000000119209290, 0.0, -0.000000077486038]
+    - [0.809459626674652, 0.0, -0.587175607681274, 0.068619230389595]
+    - [-0.587175726890564, 0.000000119209290, -0.809459626674652, 1.593295997381210]
     - [0.0, 0.0, 0.0, 1.0]
     intrinsic:
-    - [358.6421813964844, 0.0, 160.0]
-    - [0.0, 358.6421813964844, 120.0]
+    - [113.8757553100586, 0.0, 160.0]
+    - [0.0, 113.8757553100586, 120.0]
     - [0.0, 0.0, 1.0]
-dataset: RoboTwin2_random
+dataset: RoboTwin2_third_view

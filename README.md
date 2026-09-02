@@ -140,7 +140,7 @@ python visualize_lerobot_rerun.py \
 
 Pass `--point-cloud` to discover compatible LeRobot v3 RGB-D pairs. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). When those columns are absent, `--camera-calibration` supplies static base-to-camera calibration for its matching stream. The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.
 
-Depth is decoded from the original high-bit-depth video with the quantization settings in `meta/info.json`. Each RGB pixel uses the same sampled row and column as its depth value. The default stride is `2`, so a 320×240 camera contributes at most 19,200 points per frame and the three RoboTwin2 cameras contribute at most 57,600 points. Use `--point-cloud-stride 1` for full resolution or a larger value for lighter recordings.
+Depth is decoded from the original high-bit-depth video with the quantization settings in `meta/info.json`. Each RGB pixel uses the same sampled row and column as its depth value. The default stride is `2`, so a 320×240 camera contributes at most 19,200 points per frame: 57,600 points for three cameras or 76,800 for the four-camera `RoboTwin2_third_view` example. Use `--point-cloud-stride 1` for full resolution or a larger value for lighter recordings.
 
 Point clouds are ultimately expressed in the robot base/URDF `footprint` frame. For RoboTwin/Arx5 `unified_robot` data, dataset-world `+Y` corresponds to URDF-footprint `+X`, and the two origins are 0.65 m apart. The script therefore maps `world → footprint` as `(x, y, z) → (y + 0.65, -x, z)`: a 90-degree clockwise yaw about `+Z`, followed by a 0.65 m translation along base `+X`. This transform was recovered by matching both calibrated wrist-camera positions against their URDF forward-kinematics positions over the episode. Other robot types currently treat `world` and `footprint` as aligned. `--no-video --point-cloud` omits the 2D camera panels while retaining point-cloud decoding, and `--no-robot --point-cloud` shows the reconstructed scene without loading a URDF.
 
@@ -171,11 +171,11 @@ python visualize_lerobot_rerun.py \
   --camera-resolution 480 640
 ```
 
-For a RoboTwin export with the additional `cam_third_view` RGB-D stream but no per-frame camera matrices:
+For a RoboTwin export with the additional `cam_third_view` RGB-D stream:
 
 ```bash
 python visualize_lerobot_rerun.py \
-  --root assets/example/RoboTwin2_random \
+  --root assets/example/RoboTwin2_third_view \
   --episode 0 \
   --camera-calibration calibrations/robotwin_third_view.yaml \
   --camera-resolution 240 320 \
