@@ -53,7 +53,6 @@ python -m pip install \
 
 ```bash
 hf download HarrisonPENG/Embodiments \
-  --repo-type dataset \
   --local-dir embodiments
 ```
 

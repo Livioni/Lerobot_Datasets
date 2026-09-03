@@ -53,7 +53,6 @@ Download [`HarrisonPENG/Embodiments`](https://huggingface.co/datasets/HarrisonPE
 
 ```bash
 hf download HarrisonPENG/Embodiments \
-  --repo-type dataset \
   --local-dir embodiments
 ```
 
