@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Visualize converted RoboTwin TCP trajectories in Rerun.
 
-For each frame this script replays the RoboTwin ARX5 URDF and shows the current
-left/right TCP, its coordinate axes, gripper state, and the most recent N TCP
-samples.  The history length is 10 by default.  RGB-D and camera-frame TCP
-poses are transformed into the fixed robot-footprint frame so the robot,
-trajectory, and colored point cloud remain aligned during playback.
+By default this script reads TCP poses from ``TCP_third`` and RGB-D/calibration
+from RoboTwin's fixed ``third_views`` camera.  It replays the RoboTwin ARX5
+URDF and shows the current left/right TCP, coordinate axes, gripper state, and
+the most recent N TCP samples.  Third-view RGB-D and TCP poses are transformed
+into the fixed robot-footprint frame so the robot, trajectory, and colored
+point cloud remain aligned during playback.
 
 Example:
     conda run -n rerun python visualize_robotwin_tcp_rerun.py \
-        4d_datasets/adjust_bottle/episode_0000000 --history 10
+    4d_datasets/adjust_bottle/episode_0000000
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ import visualize_lerobot_rerun as lerobot_viz
 
 TIMELINE = "episode_time"
 DEFAULT_RERUN_PORT = 9876
+DEFAULT_TCP_DIR = "TCP_third"
+DEFAULT_CAMERA = "third_views"
 SIDE_COLORS = {
     "left": np.array([80, 200, 255], dtype=np.uint8),
     "right": np.array([255, 170, 70], dtype=np.uint8),
@@ -93,8 +96,10 @@ def load_homogeneous_extrinsics(path: Path, frame_count: int) -> np.ndarray:
     return extrinsics
 
 
-def load_tcp_states(episode: Path) -> tuple[dict[str, np.ndarray], dict[str, object]]:
-    tcp_dir = episode / "TCP"
+def load_tcp_states(
+    episode: Path, tcp_dir_name: str
+) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+    tcp_dir = episode / tcp_dir_name
     metadata_path = tcp_dir / "metadata.json"
     if not metadata_path.is_file():
         raise FileNotFoundError(
@@ -260,6 +265,7 @@ def log_static_scene(
     frame_count: int,
     fps: float,
     history: int,
+    tcp_dir_name: str,
 ) -> None:
     rr.log("robot", rr.ViewCoordinates.FLU, static=True)
     lerobot_viz.log_robot_footprint_frame()
@@ -281,6 +287,7 @@ def log_static_scene(
                     f"# {episode.parent.name}/{episode.name}",
                     "",
                     "- 3D replay frame: robot footprint (FLU)",
+                    f"- TCP source: `{tcp_dir_name}`",
                     f"- Stored TCP frame: `{camera}` camera (OpenCV RDF)",
                     f"- Frames: {frame_count}",
                     f"- FPS: {fps:g}",
@@ -309,10 +316,10 @@ def make_blueprint(show_rgb: bool, show_robot: bool) -> rrb.Blueprint:
     else:
         upper = spatial
     layout = rrb.Vertical(
-            upper,
-            rrb.Horizontal(info_view, signal_view, column_shares=[1, 2]),
-            row_shares=[3, 1],
-        )
+        upper,
+        rrb.Horizontal(info_view, signal_view, column_shares=[1, 2]),
+        row_shares=[3, 1],
+    )
     return rrb.Blueprint(
         layout,
         rrb.TimePanel(timeline=TIMELINE, expanded=True),
@@ -328,6 +335,16 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("episode", type=Path, help="Converted RoboTwin episode directory")
+    parser.add_argument(
+        "--tcp-dir",
+        default=DEFAULT_TCP_DIR,
+        help="Episode subdirectory containing left_state.npy and right_state.npy",
+    )
+    parser.add_argument(
+        "--camera",
+        default=DEFAULT_CAMERA,
+        help="RGB-D/intrinsics/extrinsics camera directory name",
+    )
     parser.add_argument(
         "--history",
         type=positive_int,
@@ -378,9 +395,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     episode = args.episode.expanduser().resolve()
-    states, tcp_metadata = load_tcp_states(episode)
+    states, tcp_metadata = load_tcp_states(episode, args.tcp_dir)
     frame_count = len(states["left"])
-    camera = str(tcp_metadata.get("camera", "head_view"))
+    camera = args.camera
+    tcp_camera = str(tcp_metadata.get("camera", ""))
+    if tcp_camera != camera:
+        raise SystemExit(
+            f"TCP camera mismatch: {episode / args.tcp_dir / 'metadata.json'} "
+            f"declares {tcp_camera!r}, but --camera is {camera!r}"
+        )
 
     episode_metadata_path = episode / "metadata.json"
     episode_metadata = (
@@ -445,7 +468,9 @@ def main() -> None:
     timestamps = np.arange(frame_count, dtype=np.float64) / fps
     robot_state = load_robot_state(episode, frame_count) if not args.no_robot else None
 
-    rr.init(f"robotwin_tcp_{episode.parent.name}_{episode.name}", spawn=False)
+    rr.init(
+        f"robotwin_tcp_{camera}_{episode.parent.name}_{episode.name}", spawn=False
+    )
     recording = rr.get_global_data_recording()
     if recording is None:
         raise SystemExit("Rerun recording failed to initialize")
@@ -460,7 +485,15 @@ def main() -> None:
         recording.spawn(port=port)
 
     log_static_scene(
-        episode, camera, intrinsic, width, height, frame_count, fps, args.history
+        episode,
+        camera,
+        intrinsic,
+        width,
+        height,
+        frame_count,
+        fps,
+        args.history,
+        args.tcp_dir,
     )
     rr.send_blueprint(make_blueprint(not args.no_rgb, not args.no_robot))
 
@@ -477,7 +510,7 @@ def main() -> None:
 
         print(
             f"Loading {episode.parent.name}/{episode.name}: {frame_count} frames, "
-            f"camera={camera}, history={args.history}"
+            f"tcp_dir={args.tcp_dir}, camera={camera}, history={args.history}"
         )
         for frame_index in range(frame_count):
             rr.set_time(TIMELINE, duration=float(timestamps[frame_index]))
