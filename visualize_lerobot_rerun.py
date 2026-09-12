@@ -497,6 +497,63 @@ def log_signals(
     return views
 
 
+def video_feature_resolution(feature: dict[str, Any]) -> tuple[int, int] | None:
+    """Return ``(height, width)`` for a video/image feature, or ``None``.
+
+    LeRobot v3 datasets store video shape inconsistently across exporters:
+    some use channels-first ``[channels, height, width]`` (e.g. W2) while
+    others use channels-last ``[height, width, channels]`` (e.g. RoboTwin2,
+    LIBERO). The accompanying ``names`` list disambiguates the layout; we
+    also fall back to the explicit ``video.height``/``video.width`` metadata
+    stored under ``info`` when ``names`` is missing or mismatched.
+    """
+    names = flatten_component_names(feature.get("names"))
+    shape = tuple(int(value) for value in feature.get("shape", ()))
+    if names and len(names) == len(shape):
+        index_by_name = {name: index for index, name in enumerate(names)}
+        height_index = index_by_name.get("height")
+        width_index = index_by_name.get("width")
+        if height_index is not None and width_index is not None:
+            height = shape[height_index]
+            width = shape[width_index]
+            if height > 0 and width > 0:
+                return (height, width)
+
+    feature_info = feature.get("info") or {}
+    if isinstance(feature_info, dict):
+        height = feature_info.get("video.height")
+        width = feature_info.get("video.width")
+        if isinstance(height, int) and isinstance(width, int) and height > 0 and width > 0:
+            return (int(height), int(width))
+    return None
+
+
+def video_feature_channels(feature: dict[str, Any]) -> int | None:
+    """Return the channel count for a video/image feature, or ``None``.
+
+    The channel dimension is identified as the one that is neither
+    ``height`` nor ``width`` in the ``names`` list; we fall back to the
+    ``video.channels`` metadata when ``names`` is unavailable or mismatched.
+    """
+    names = flatten_component_names(feature.get("names"))
+    shape = tuple(int(value) for value in feature.get("shape", ()))
+    if names and len(names) == len(shape):
+        index_by_name = {name: index for index, name in enumerate(names)}
+        spatial = {index_by_name.get("height"), index_by_name.get("width")}
+        channel_indices = [index for index in range(len(shape)) if index not in spatial]
+        if channel_indices:
+            value = shape[channel_indices[0]]
+            if value > 0:
+                return int(value)
+
+    feature_info = feature.get("info") or {}
+    if isinstance(feature_info, dict):
+        channels = feature_info.get("video.channels")
+        if isinstance(channels, int) and channels > 0:
+            return int(channels)
+    return None
+
+
 def discover_point_cloud_cameras(
     info: dict[str, Any],
     table: pa.Table,
@@ -534,22 +591,43 @@ def discover_point_cloud_cameras(
             continue
 
         try:
-            depth_shape = tuple(int(value) for value in depth_feature.get("shape", ()))
-            rgb_shape = tuple(int(value) for value in rgb_feature.get("shape", ()))
+            depth_resolution = video_feature_resolution(depth_feature)
+            rgb_resolution = video_feature_resolution(rgb_feature)
+            depth_channels = video_feature_channels(depth_feature)
+            rgb_channels = video_feature_channels(rgb_feature)
         except (TypeError, ValueError):
             issues.append(f"skipping {depth_key}: RGB-D feature shapes are invalid")
             continue
-        if len(depth_shape) != 3 or depth_shape[2] != 1:
+        if depth_resolution is None or depth_channels is None:
             issues.append(
-                f"skipping {depth_key}: expected depth shape (H, W, 1), got {depth_shape}"
+                f"skipping {depth_key}: could not determine depth resolution/channels"
             )
             continue
-        if rgb_shape != (depth_shape[0], depth_shape[1], 3):
+        if rgb_resolution is None or rgb_channels is None:
             issues.append(
-                f"skipping {depth_key}: paired RGB shape {rgb_shape} does not match "
-                f"{(depth_shape[0], depth_shape[1], 3)}"
+                f"skipping {depth_key}: could not determine RGB resolution/channels"
             )
             continue
+        if depth_channels != 1:
+            issues.append(
+                f"skipping {depth_key}: expected depth with 1 channel, "
+                f"got {depth_channels}"
+            )
+            continue
+        if rgb_channels != 3:
+            issues.append(
+                f"skipping {depth_key}: expected RGB with 3 channels, "
+                f"got {rgb_channels}"
+            )
+            continue
+        if depth_resolution != rgb_resolution:
+            issues.append(
+                f"skipping {depth_key}: depth resolution {depth_resolution[0]}x"
+                f"{depth_resolution[1]} does not match RGB resolution "
+                f"{rgb_resolution[0]}x{rgb_resolution[1]}"
+            )
+            continue
+        height, width = depth_resolution
 
         camera_name = rgb_key.rsplit(".", 1)[-1]
         calibration_prefix = f"calibration.{camera_name}"
@@ -571,11 +649,11 @@ def discover_point_cloud_cameras(
             intrinsic_key = None
             camera_pose_key = None
             extrinsic_key = None
-            if (static_calibration.height, static_calibration.width) != depth_shape[:2]:
+            if (static_calibration.height, static_calibration.width) != (height, width):
                 issues.append(
                     f"skipping {depth_key}: static calibration resolution "
                     f"{static_calibration.height}x{static_calibration.width} HxW does not "
-                    f"match video {depth_shape[0]}x{depth_shape[1]}"
+                    f"match video {height}x{width}"
                 )
                 continue
         else:
@@ -646,8 +724,8 @@ def discover_point_cloud_cameras(
                 camera_pose_key=camera_pose_key,
                 extrinsic_key=extrinsic_key,
                 static_calibration=static_calibration,
-                height=depth_shape[0],
-                width=depth_shape[1],
+                height=height,
+                width=width,
                 depth_min=depth_min,
                 depth_max=depth_max,
                 depth_shift=depth_shift,
@@ -784,12 +862,12 @@ def validate_camera_calibration_against_episode(
     """Reject a static YAML calibration that conflicts with episode matrices."""
     feature = info.get("features", {}).get(calibration.feature_key)
     if isinstance(feature, dict):
-        shape = tuple(int(value) for value in feature.get("shape", ()))
-        if len(shape) >= 2 and (calibration.height, calibration.width) != shape[:2]:
+        resolution = video_feature_resolution(feature)
+        if resolution is not None and (calibration.height, calibration.width) != resolution:
             raise ValueError(
                 f"Camera calibration resolution {calibration.height}x{calibration.width} "
                 f"HxW does not match {calibration.feature_key} resolution "
-                f"{shape[0]}x{shape[1]}"
+                f"{resolution[0]}x{resolution[1]}"
             )
 
     camera_name = calibration.feature_key.rsplit(".", 1)[-1]
