@@ -160,18 +160,18 @@ The visualizer prepends the `embodiments/` package directory to `ROS_PACKAGE_PAT
 
 ## Calibrated camera replay
 
-Use [`caliberations/w2_demo.yaml`](caliberations/w2_demo.yaml) to inspect the W2 example from a fixed main-camera viewpoint:
+Use [`calibrations/w2_demo.yaml`](calibrations/w2_demo.yaml) to inspect the W2 example from a fixed main-camera viewpoint:
 
 ```bash
 python visualize_lerobot_rerun.py \
   --root assets/example/W2 \
   --episode 0 \
-  --camera-calibration caliberations/w2_demo.yaml \
+  --camera-calibration calibrations/w2_demo.yaml \
   --camera-resolution 480 640
 ```
 
 
-![CaliberatedCameraReplay](assets/images/caliball.gif)
+![CalibratedCameraReplay](assets/images/caliball.gif)
 
 The YAML `extrinsic` is interpreted as:
 

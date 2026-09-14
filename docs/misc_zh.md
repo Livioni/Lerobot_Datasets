@@ -100,7 +100,7 @@ python upload_lerobot_datasets.py \
 ```text
 .
 ├── assets/example/                 # 三个独立可读的 LeRobot v3.0 示例
-├── caliberations/                  # 相机标定 YAML
+├── calibrations/                  # 相机标定 YAML
 ├── embodiments/                    # 下载的 URDF 和网格包（Git 已忽略）
 ├── visualize_lerobot_rerun.py      # LeRobot v3.0 Rerun 可视化
 ├── visualize_lerobot_rerun_v21.py  # LeRobot v2.1 Rerun 可视化

@@ -162,13 +162,13 @@ v3.0 可视化脚本目前识别两类状态配置：
 
 ## 标定相机视角回放
 
-使用 [`caliberations/w2_demo.yaml`](caliberations/w2_demo.yaml) 中的标定，从固定主相机视角查看 W2 示例：
+使用 [`calibrations/w2_demo.yaml`](calibrations/w2_demo.yaml) 中的标定，从固定主相机视角查看 W2 示例：
 
 ```bash
 python visualize_lerobot_rerun.py \
   --root assets/example/W2 \
   --episode 0 \
-  --camera-calibration caliberations/w2_demo.yaml \
+  --camera-calibration calibrations/w2_demo.yaml \
   --camera-resolution 480 640
 ```
 
@@ -178,7 +178,7 @@ python visualize_lerobot_rerun.py \
 python visualize_lerobot_rerun.py \
   --root assets/example/RoboTwin2 \
   --episode 0 \
-  --camera-calibration caliberations/robotwin.yaml \
+  --camera-calibration calibrations/robotwin.yaml \
   --camera-resolution 240 320 \
   --point-cloud
 ```
