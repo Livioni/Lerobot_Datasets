@@ -135,6 +135,14 @@ python visualize_lerobot_rerun.py \
   --list-datasets
 ```
 
+## Web viewer on headless machines
+
+The four scripts `visualize_lerobot_rerun.py`, `visualize_lerobot_rerun_v21.py`, `visualize_robotwin_tcp_rerun.py`, and `visualize_robotwin_tcp_prediction_rerun.py` share the same viewer behavior. On Linux, each automatically starts the Web viewer when `DISPLAY`, `WAYLAND_DISPLAY`, and `WAYLAND_SOCKET` are all unset or empty. Run the same command as above; no extra flag is needed. Use `--web` to select the Web viewer manually, including on a desktop.
+
+The terminal prints a browser URL and an SSH forwarding command. When running on a remote machine, run that SSH command on your own computer (replace `<user>@<server>`), then open the printed URL locally. Both the Web port (normally `9090`) and the data port (normally `9876`) must be forwarded; occupied ports are replaced automatically and the printed command uses the selected ports.
+
+Keep the visualization process running while viewing; press `Ctrl+C` to stop. `--output recording.rrd` still saves a file and exits without starting a viewer.
+
 ## RGB-D point clouds in the base frame
 
 Pass `--point-cloud` to discover compatible LeRobot v3 RGB-D pairs. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). When those columns are absent, `--camera-calibration` supplies static base-to-camera calibration for its matching stream. The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.

@@ -301,11 +301,7 @@ def parse_args() -> argparse.Namespace:
         default=(common.DEFAULT_CAMERA_HEIGHT, common.DEFAULT_CAMERA_WIDTH),
         help="Calibrated replay resolution in HxW order",
     )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        help="Write an .rrd recording instead of opening the Rerun viewer",
-    )
+    common.add_viewer_arguments(parser)
     parser.add_argument(
         "--list-datasets", action="store_true", help="List detected datasets and exit"
     )
@@ -373,18 +369,7 @@ def main() -> None:
     recording = rr.get_global_data_recording()
     if recording is None:
         raise SystemExit("Rerun recording failed to initialize")
-    if args.output:
-        output = args.output.expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        recording.save(output)
-    else:
-        rerun_port = common.choose_rerun_port()
-        if rerun_port != common.DEFAULT_RERUN_PORT:
-            print(
-                f"Rerun port {common.DEFAULT_RERUN_PORT} is occupied; "
-                f"using free port {rerun_port} instead."
-            )
-        recording.spawn(port=rerun_port)
+    use_web = common.configure_rerun_output(recording, args.output, web=args.web)
 
     print(
         f"Loading {dataset.name}, episode {args.episode} "
@@ -427,6 +412,8 @@ def main() -> None:
         print(f"Saved Rerun recording: {args.output.expanduser().resolve()}")
     else:
         print("Episode loaded in Rerun. Use the episode_time timeline to scrub or play.")
+        if use_web:
+            common.wait_for_web_viewer(recording)
 
 
 if __name__ == "__main__":

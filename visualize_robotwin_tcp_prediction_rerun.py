@@ -512,9 +512,7 @@ def parse_args() -> argparse.Namespace:
     robot_group.add_argument(
         "--no-robot", action="store_true", help="Disable URDF robot replay"
     )
-    parser.add_argument(
-        "--output", type=Path, help="Write an .rrd recording instead of opening Rerun"
-    )
+    lerobot_viz.add_viewer_arguments(parser)
     return parser.parse_args()
 
 
@@ -736,17 +734,7 @@ def main() -> None:
     recording = rr.get_global_data_recording()
     if recording is None:
         raise SystemExit("Rerun recording failed to initialize")
-    if args.output:
-        output = args.output.expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        recording.save(output)
-    else:
-        port = base_viz.choose_rerun_port()
-        if port != base_viz.DEFAULT_RERUN_PORT:
-            print(
-                f"Rerun port {base_viz.DEFAULT_RERUN_PORT} is occupied; using {port}"
-            )
-        recording.spawn(port=port)
+    use_web = lerobot_viz.configure_rerun_output(recording, args.output, web=args.web)
 
     log_static_scene(intrinsic, width, height, summary)
     rr.send_blueprint(
@@ -947,6 +935,8 @@ def main() -> None:
         print(f"Saved Rerun recording: {args.output.expanduser().resolve()}")
     else:
         print(f"Loaded in Rerun. Scrub or play the {TIMELINE} timeline.")
+        if use_web:
+            lerobot_viz.wait_for_web_viewer(recording)
 
 
 if __name__ == "__main__":

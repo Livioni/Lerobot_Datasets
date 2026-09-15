@@ -9,6 +9,7 @@ Examples:
 
 When ``--dataset`` is omitted, the script automatically selects the only
 compatible dataset, or shows an interactive menu if several are found.
+On Linux without a graphical display, the Web viewer starts automatically.
 """
 
 from __future__ import annotations
@@ -23,10 +24,12 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import quote
 
 import numpy as np
 import pyarrow as pa
@@ -38,6 +41,7 @@ from PIL import Image, ImageStat
 
 TIMELINE = "episode_time"
 DEFAULT_RERUN_PORT = 9876
+DEFAULT_WEB_PORT = 9090
 PIPER_ROBOT_TYPE = "agilex_piper_bimanual"
 ARX5_ROBOT_TYPE = "unified_robot"
 PIPER_STATE_FEATURE = "observation.state"
@@ -190,6 +194,90 @@ def choose_rerun_port(preferred: int = DEFAULT_RERUN_PORT) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
         candidate.bind(("127.0.0.1", 0))
         return int(candidate.getsockname()[1])
+
+
+def has_graphical_display() -> bool:
+    """Linux viewers need an X11 or Wayland display; other platforms do not."""
+    return not sys.platform.startswith("linux") or any(
+        os.environ.get(name)
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET")
+    )
+
+
+def start_web_viewer(recording: rr.RecordingStream, grpc_port: int) -> None:
+    server_uri = recording.serve_grpc(
+        grpc_port=grpc_port, server_memory_limit="75%"
+    )
+    web_port = choose_rerun_port(DEFAULT_WEB_PORT)
+    if web_port != DEFAULT_WEB_PORT:
+        print(
+            f"Web port {DEFAULT_WEB_PORT} is occupied; "
+            f"using free port {web_port} instead."
+        )
+    rr.serve_web_viewer(
+        web_port=web_port, open_browser=False, connect_to=server_uri
+    )
+    # connect_to only opens a connection automatically when open_browser=True.
+    # Include it in the printed URL so manually opened viewers also receive data.
+    viewer_url = f"http://localhost:{web_port}/?url={quote(server_uri, safe=':/')}"
+    print(f"Rerun Web viewer: {viewer_url}")
+    print(
+        "For remote access, run this on your own computer, then open the URL above:\n"
+        f"  ssh -N -L {web_port}:127.0.0.1:{web_port} "
+        f"-L {grpc_port}:127.0.0.1:{grpc_port} <user>@<server>"
+    )
+
+
+def add_viewer_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the shared Web viewer and recording export options."""
+    viewer_group = parser.add_mutually_exclusive_group()
+    viewer_group.add_argument(
+        "--web",
+        action="store_true",
+        help="Use the Web viewer (automatic on Linux without an X11/Wayland display)",
+    )
+    viewer_group.add_argument(
+        "--output",
+        type=Path,
+        help="Write an .rrd recording instead of opening the Rerun viewer",
+    )
+
+
+def configure_rerun_output(
+    recording: rr.RecordingStream, output_path: Path | None, *, web: bool = False
+) -> bool:
+    """Start the selected recording output and return whether Web is serving."""
+    use_web = not output_path and (web or not has_graphical_display())
+    if output_path:
+        output = output_path.expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        recording.save(output)
+    else:
+        rerun_port = choose_rerun_port()
+        if rerun_port != DEFAULT_RERUN_PORT:
+            print(
+                f"Rerun port {DEFAULT_RERUN_PORT} is occupied; "
+                f"using free port {rerun_port} instead."
+            )
+        if use_web:
+            if not web:
+                print("No graphical display detected; starting the Rerun Web viewer.")
+            start_web_viewer(recording, rerun_port)
+        else:
+            recording.spawn(port=rerun_port)
+    return use_web
+
+
+def wait_for_web_viewer(recording: rr.RecordingStream) -> None:
+    """Keep the in-process Web server available until Ctrl+C."""
+    print("Web viewer is running. Press Ctrl+C to stop.", flush=True)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping Rerun Web viewer.")
+    finally:
+        recording.disconnect()
 
 
 def discover_datasets(root: Path) -> list[Path]:
@@ -2565,11 +2653,7 @@ def parse_args() -> argparse.Namespace:
         default=(DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH),
         help="Calibrated replay resolution in HxW order",
     )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        help="Write an .rrd recording instead of opening the Rerun viewer",
-    )
+    add_viewer_arguments(parser)
     parser.add_argument(
         "--list-datasets", action="store_true", help="List detected datasets and exit"
     )
@@ -2631,18 +2715,7 @@ def main() -> None:
     recording = rr.get_global_data_recording()
     if recording is None:
         raise SystemExit("Rerun recording failed to initialize")
-    if args.output:
-        output = args.output.expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        recording.save(output)
-    else:
-        rerun_port = choose_rerun_port()
-        if rerun_port != DEFAULT_RERUN_PORT:
-            print(
-                f"Rerun port {DEFAULT_RERUN_PORT} is occupied; "
-                f"using free port {rerun_port} instead."
-            )
-        recording.spawn(port=rerun_port)
+    use_web = configure_rerun_output(recording, args.output, web=args.web)
 
     print(
         f"Loading {dataset.name}, episode {args.episode} "
@@ -2699,6 +2772,8 @@ def main() -> None:
         print(f"Saved Rerun recording: {args.output.expanduser().resolve()}")
     else:
         print("Episode loaded in Rerun. Use the episode_time timeline to scrub or play.")
+        if use_web:
+            wait_for_web_viewer(recording)
 
 
 if __name__ == "__main__":

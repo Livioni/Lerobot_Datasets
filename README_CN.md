@@ -135,6 +135,14 @@ python visualize_lerobot_rerun.py \
   --list-datasets
 ```
 
+## 无显示器时使用 Web 可视化
+
+`visualize_lerobot_rerun.py`、`visualize_lerobot_rerun_v21.py`、`visualize_robotwin_tcp_rerun.py` 和 `visualize_robotwin_tcp_prediction_rerun.py` 使用相同的查看器启动逻辑。在 Linux 上，当 `DISPLAY`、`WAYLAND_DISPLAY` 和 `WAYLAND_SOCKET` 都未设置或为空时，都会自动启动 Web 查看器。直接运行原来的命令即可，无需额外参数；也可以添加 `--web` 手动选择 Web 模式，包括在桌面环境中。
+
+终端会打印浏览器访问地址和 SSH 端口转发命令。如果脚本运行在远程机器上，请在自己的电脑上执行打印的 SSH 命令（替换 `<user>@<server>`），然后在本地浏览器打开打印的地址。需要同时转发 Web 端口（通常为 `9090`）和数据端口（通常为 `9876`）；端口被占用时会自动选择空闲端口，打印的命令会使用实际端口。
+
+查看期间请保持可视化进程运行，按 `Ctrl+C` 停止。`--output recording.rrd` 仍然只保存文件并退出，不启动查看器。
+
 ## Base 坐标系 RGB-D 点云
 
 传入 `--point-cloud` 后，脚本会发现兼容的 LeRobot v3 RGB-D 数据。名为 `observation.images.<camera>_depth` 的深度流会与 `observation.images.<camera>` RGB 流，以及逐帧的 `calibration.<camera>.intrinsic_matrix`、`camera_pose_matrix`（或 `extrinsic_matrix` 的逆矩阵）配对。缺少这些列时，`--camera-calibration` 会为同名相机提供静态 base→camera YAML 标定。各路点云在现有机器人三维视图中共同显示，同时保留在 `robot/scene_point_cloud` 下分别开关的能力。
