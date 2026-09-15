@@ -1,0 +1,122 @@
+[
+  {
+    "task": "beat_block_hammer",
+    "episode": "episode_0000000",
+    "embodiment": "ARX-X5",
+    "shape": [
+      121,
+      14
+    ],
+    "successful_arm_frames": 242,
+    "total_arm_frames": 242,
+    "success_percent": 100.0,
+    "max_success_position_error_mm": 0.015458,
+    "max_success_rotation_error_deg": 0.029821,
+    "wall_time_seconds": 15.91
+  },
+  {
+    "task": "beat_block_hammer",
+    "episode": "episode_0000000",
+    "embodiment": "franka-panda",
+    "shape": [
+      121,
+      16
+    ],
+    "successful_arm_frames": 239,
+    "total_arm_frames": 242,
+    "success_percent": 98.76,
+    "max_success_position_error_mm": 1.768743,
+    "max_success_rotation_error_deg": 0.679137,
+    "wall_time_seconds": 19.53
+  },
+  {
+    "task": "beat_block_hammer",
+    "episode": "episode_0000000",
+    "embodiment": "piper",
+    "shape": [
+      121,
+      14
+    ],
+    "successful_arm_frames": 186,
+    "total_arm_frames": 242,
+    "success_percent": 76.86,
+    "max_success_position_error_mm": 0.745844,
+    "max_success_rotation_error_deg": 0.194481,
+    "wall_time_seconds": 18.22
+  },
+  {
+    "task": "beat_block_hammer",
+    "episode": "episode_0000000",
+    "embodiment": "ur5-wsg",
+    "shape": [
+      121,
+      14
+    ],
+    "successful_arm_frames": 242,
+    "total_arm_frames": 242,
+    "success_percent": 100.0,
+    "max_success_position_error_mm": 0.016171,
+    "max_success_rotation_error_deg": 0.029821,
+    "wall_time_seconds": 14.01
+  },
+  {
+    "task": "place_dual_shoes",
+    "episode": "episode_0000092",
+    "embodiment": "ARX-X5",
+    "shape": [
+      256,
+      14
+    ],
+    "successful_arm_frames": 512,
+    "total_arm_frames": 512,
+    "success_percent": 100.0,
+    "max_success_position_error_mm": 0.015984,
+    "max_success_rotation_error_deg": 0.029821,
+    "wall_time_seconds": 23.72
+  },
+  {
+    "task": "place_dual_shoes",
+    "episode": "episode_0000092",
+    "embodiment": "franka-panda",
+    "shape": [
+      256,
+      16
+    ],
+    "successful_arm_frames": 499,
+    "total_arm_frames": 512,
+    "success_percent": 97.46,
+    "max_success_position_error_mm": 0.025729,
+    "max_success_rotation_error_deg": 0.030488,
+    "wall_time_seconds": 26.33
+  },
+  {
+    "task": "place_dual_shoes",
+    "episode": "episode_0000092",
+    "embodiment": "piper",
+    "shape": [
+      256,
+      14
+    ],
+    "successful_arm_frames": 410,
+    "total_arm_frames": 512,
+    "success_percent": 80.08,
+    "max_success_position_error_mm": 2.16764,
+    "max_success_rotation_error_deg": 0.64128,
+    "wall_time_seconds": 30.31
+  },
+  {
+    "task": "place_dual_shoes",
+    "episode": "episode_0000092",
+    "embodiment": "ur5-wsg",
+    "shape": [
+      256,
+      14
+    ],
+    "successful_arm_frames": 512,
+    "total_arm_frames": 512,
+    "success_percent": 100.0,
+    "max_success_position_error_mm": 0.015936,
+    "max_success_rotation_error_deg": 0.029821,
+    "wall_time_seconds": 26.68
+  }
+]

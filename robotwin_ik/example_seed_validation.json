@@ -1,0 +1,112 @@
+[
+  {
+    "embodiment": "franka_panda",
+    "side": "left",
+    "counts": {
+      "success": 247,
+      "failure": 9,
+      "fallback_used": 11,
+      "fallback_success": 2
+    },
+    "max_joint_step_rad": 4.155872344970703
+  },
+  {
+    "embodiment": "franka_panda",
+    "side": "right",
+    "counts": {
+      "success": 252,
+      "failure": 4,
+      "fallback_used": 6,
+      "fallback_success": 2
+    },
+    "max_joint_step_rad": 3.147292137145996
+  },
+  {
+    "embodiment": "ur5_wsg",
+    "side": "left",
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 6,
+      "fallback_success": 6
+    },
+    "max_joint_step_rad": 0.21069425344467163
+  },
+  {
+    "embodiment": "ur5_wsg",
+    "side": "right",
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 2,
+      "fallback_success": 2
+    },
+    "max_joint_step_rad": 0.16771113872528076
+  },
+  {
+    "embodiment": "piper",
+    "side": "left",
+    "counts": {
+      "success": 210,
+      "failure": 46,
+      "fallback_used": 49,
+      "fallback_success": 3
+    },
+    "max_joint_step_rad": 2.270435333251953
+  },
+  {
+    "embodiment": "piper",
+    "side": "right",
+    "counts": {
+      "success": 200,
+      "failure": 56,
+      "fallback_used": 57,
+      "fallback_success": 1
+    },
+    "max_joint_step_rad": 2.4695897102355957
+  },
+  {
+    "embodiment": "arx_x5",
+    "side": "left",
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 1,
+      "fallback_success": 1
+    },
+    "max_joint_step_rad": 0.3515981435775757
+  },
+  {
+    "embodiment": "arx_x5",
+    "side": "right",
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 0,
+      "fallback_success": 0
+    },
+    "max_joint_step_rad": 0.1903751790523529
+  },
+  {
+    "embodiment": "aloha_agilex",
+    "side": "left",
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 0,
+      "fallback_success": 0
+    },
+    "max_joint_step_rad": 0.2223948836326599
+  },
+  {
+    "embodiment": "aloha_agilex",
+    "side": "right",
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 0,
+      "fallback_success": 0
+    },
+    "max_joint_step_rad": 0.1610000729560852
+  }
+]

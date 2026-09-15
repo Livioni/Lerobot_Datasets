@@ -1,0 +1,829 @@
+{
+  "date": "2026-09-13",
+  "format": "robotwin_closed_tcp_trajectory_v3",
+  "parameters": {
+    "ik_seeds": 64,
+    "maximum_ik_seeds": 256,
+    "max_joint_step_rad": 0.5,
+    "position_tolerance_m": 0.003,
+    "rotation_tolerance_deg": 2.0,
+    "preserve_timestamps": true
+  },
+  "tests": {
+    "unique_cases_passed": 24,
+    "gpu_embodiments": [
+      "franka-panda",
+      "ARX-X5",
+      "piper",
+      "ur5-wsg",
+      "aloha-agilex"
+    ],
+    "checks": [
+      "whole-trajectory FK/IK/FK",
+      "independent TCP position and rotation gradients",
+      "future-aware graph branch choice",
+      "k shortest paths versus exhaustive search",
+      "missing-layer initialization",
+      "nonuniform time and float32 acceptance",
+      "unreachable targets and error reporting",
+      "success/candidate output and replay compatibility"
+    ],
+    "logs": [
+      "/tmp/tcp_trajectory_gpu_suite_final.log"
+    ],
+    "additional_command": "conda run -n RoboTwin python -m unittest discover -s robotwin_ik/tests -p test_trajectory_output.py -v"
+  },
+  "independent_validation": "NumPy URDF FK, positional bounds, original timestamps/grippers, joint steps, velocity/acceleration diagnostics and artifact roles",
+  "successful_trajectories": 5,
+  "failed_candidates": 4,
+  "output_root": "/tmp/robotwin_trajectory_validation_20260913_final",
+  "environment": {
+    "python": "3.10.20",
+    "torch": "2.9.1+cu128",
+    "torch_cuda": "12.8",
+    "curobo": "0.0.0",
+    "gpu": "NVIDIA GeForce RTX 5090 D v2"
+  },
+  "replay_exports": [
+    "/tmp/robotwin_trajectory_validation_20260913_final/ur5_success.rrd",
+    "/tmp/robotwin_trajectory_validation_20260913_final/franka_candidate.rrd",
+    "/tmp/robotwin_trajectory_validation_20260913_final/aloha_success.rrd"
+  ],
+  "solver_source_sha256": {
+    "_solver.py": "6aa1080dc3754aa236c3b90ccd7196cbb812e30880a97eba6aec74e48adf216e",
+    "_trajectory.py": "6f3c6c0dd213d788ad061e1d5f12190f1c3c03b0d3ef39dfc149045b63623b23",
+    "_trajectory_opt.py": "d62602fa95797e62f564f9153410dfbeff31802d4ea862a0bc2c4b4a50e491a4",
+    "_kinematics.py": "6c8e662127d85915d1a6da4b24f5a576be916ace5d4dfcffb7607b33476686c2",
+    "_common.py": "6be6ca59d1f61e8bd6bb9db429242edcf7f85e7da52ade1500658dd37dc2a3a2",
+    "_aloha.py": "e3d8e2ad0d4ad40f2ee3dc1a2ad627ad529ee2fd17a640ccb21e31eccd7fbf52",
+    "_io.py": "e5ed14d562030223fdd122559601541f12f0fd925864aac9edb0281b02624c20"
+  },
+  "results": [
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/hammer/aloha_agilex",
+      "embodiment": "aloha-agilex",
+      "status": "success",
+      "shape": [
+        121,
+        14
+      ],
+      "successful_arm_frames": 242,
+      "total_arm_frames": 242,
+      "max_success_position_error_mm": 2.854688041396064,
+      "max_success_rotation_error_deg": 1.790711128299599,
+      "max_joint_step_rad": 0.12989330291748047,
+      "arms": {
+        "left": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.12989330291748047
+        },
+        "right": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.00023537501692771912
+        }
+      },
+      "wall_time_seconds": 10.970593037025537,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/beat_block_hammer/episode_0000000",
+      "prediction_sha256": "290cdc362b278fc054992f15d7aef5e998580d36d283605ee88fb11c1f5dca4b",
+      "urdf_sha256": "097c59fb19a7b482249c6097df8319586ea7cfd268c015516f103b289a7e761a",
+      "base_transforms": {
+        "left": [
+          [
+            -0.0,
+            -1.0,
+            -0.0,
+            -0.0
+          ],
+          [
+            1.0,
+            0.0,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -0.0,
+            -1.0,
+            -0.0,
+            -0.0
+          ],
+          [
+            1.0,
+            0.0,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/hammer/arx_x5",
+      "embodiment": "ARX-X5",
+      "status": "success",
+      "shape": [
+        121,
+        14
+      ],
+      "successful_arm_frames": 242,
+      "total_arm_frames": 242,
+      "max_success_position_error_mm": 2.8484699965932627,
+      "max_success_rotation_error_deg": 1.8167547890223819,
+      "max_joint_step_rad": 0.10479736328125,
+      "arms": {
+        "left": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.10479736328125
+        },
+        "right": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.001745462417602539
+        }
+      },
+      "wall_time_seconds": 10.357827186002396,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/beat_block_hammer/episode_0000000",
+      "prediction_sha256": "290cdc362b278fc054992f15d7aef5e998580d36d283605ee88fb11c1f5dca4b",
+      "urdf_sha256": "7aaa308a1a5b6a213d914db86ba09ddd6252f25cb498ac9a148bfa6c7166a423",
+      "base_transforms": {
+        "left": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            -0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.35
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.784
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.35
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.784
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/hammer/franka_panda",
+      "embodiment": "franka-panda",
+      "status": "failed",
+      "shape": [
+        121,
+        16
+      ],
+      "successful_arm_frames": 237,
+      "total_arm_frames": 242,
+      "max_success_position_error_mm": 2.846069959321364,
+      "max_success_rotation_error_deg": 1.6481458979309938,
+      "max_joint_step_rad": 3.043355703353882,
+      "arms": {
+        "left": {
+          "successful_frames": 116,
+          "total_frames": 121,
+          "max_joint_step_rad": 3.043355703353882
+        },
+        "right": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.0019223690032958984
+        }
+      },
+      "wall_time_seconds": 17.396976484975312,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/beat_block_hammer/episode_0000000",
+      "prediction_sha256": "290cdc362b278fc054992f15d7aef5e998580d36d283605ee88fb11c1f5dca4b",
+      "urdf_sha256": "be80276223ca90363197d4316230173815b5ea45b1733ac514eb572ff1db786f",
+      "base_transforms": {
+        "left": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            -0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/hammer/piper",
+      "embodiment": "piper",
+      "status": "failed",
+      "shape": [
+        121,
+        14
+      ],
+      "successful_arm_frames": 188,
+      "total_arm_frames": 242,
+      "max_success_position_error_mm": 2.7862265247953415,
+      "max_success_rotation_error_deg": 1.5664642417358936,
+      "max_joint_step_rad": 0.5057647991925478,
+      "arms": {
+        "left": {
+          "successful_frames": 67,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.5057647991925478
+        },
+        "right": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.0007547140121459961
+        }
+      },
+      "wall_time_seconds": 12.917643975000829,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/beat_block_hammer/episode_0000000",
+      "prediction_sha256": "290cdc362b278fc054992f15d7aef5e998580d36d283605ee88fb11c1f5dca4b",
+      "urdf_sha256": "fa27856fc91f085877c4d022790372fe8d38f27000e7bc0c8bd091cc986c02c2",
+      "base_transforms": {
+        "left": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            -0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.45
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.45
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/hammer/ur5_wsg",
+      "embodiment": "ur5-wsg",
+      "status": "success",
+      "shape": [
+        121,
+        14
+      ],
+      "successful_arm_frames": 242,
+      "total_arm_frames": 242,
+      "max_success_position_error_mm": 2.8477136454468206,
+      "max_success_rotation_error_deg": 1.8485671487423385,
+      "max_joint_step_rad": 0.13882394693791866,
+      "arms": {
+        "left": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.13882394693791866
+        },
+        "right": {
+          "successful_frames": 121,
+          "total_frames": 121,
+          "max_joint_step_rad": 0.0015878081321716309
+        }
+      },
+      "wall_time_seconds": 8.028196730010677,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/beat_block_hammer/episode_0000000",
+      "prediction_sha256": "290cdc362b278fc054992f15d7aef5e998580d36d283605ee88fb11c1f5dca4b",
+      "urdf_sha256": "3fb7a965dd5c2d04f9f6ffbda7a3c67d88fe1d7362bc6be1f57f3dbe4efe8cb4",
+      "base_transforms": {
+        "left": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            -0.3
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.65
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.3
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.65
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/shoes/arx_x5",
+      "embodiment": "ARX-X5",
+      "status": "success",
+      "shape": [
+        256,
+        14
+      ],
+      "successful_arm_frames": 512,
+      "total_arm_frames": 512,
+      "max_success_position_error_mm": 2.8466090327240043,
+      "max_success_rotation_error_deg": 1.897664301274577,
+      "max_joint_step_rad": 0.1583724319934845,
+      "arms": {
+        "left": {
+          "successful_frames": 256,
+          "total_frames": 256,
+          "max_joint_step_rad": 0.1583724319934845
+        },
+        "right": {
+          "successful_frames": 256,
+          "total_frames": 256,
+          "max_joint_step_rad": 0.13402533531188965
+        }
+      },
+      "wall_time_seconds": 19.48134084197227,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/place_dual_shoes/episode_0000092",
+      "prediction_sha256": "8cdab35ecea473f72e075faa17f77553f6f1c923b399213d2b1a5e71a9e05318",
+      "urdf_sha256": "7aaa308a1a5b6a213d914db86ba09ddd6252f25cb498ac9a148bfa6c7166a423",
+      "base_transforms": {
+        "left": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            -0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.35
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.784
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.35
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.784
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/shoes/franka_panda",
+      "embodiment": "franka-panda",
+      "status": "failed",
+      "shape": [
+        256,
+        16
+      ],
+      "successful_arm_frames": 496,
+      "total_arm_frames": 512,
+      "max_success_position_error_mm": 2.703179000923318,
+      "max_success_rotation_error_deg": 1.544687601708618,
+      "max_joint_step_rad": 3.03015798330307,
+      "arms": {
+        "left": {
+          "successful_frames": 244,
+          "total_frames": 256,
+          "max_joint_step_rad": 3.0192108750343323
+        },
+        "right": {
+          "successful_frames": 252,
+          "total_frames": 256,
+          "max_joint_step_rad": 3.03015798330307
+        }
+      },
+      "wall_time_seconds": 39.516145975037944,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/place_dual_shoes/episode_0000092",
+      "prediction_sha256": "8cdab35ecea473f72e075faa17f77553f6f1c923b399213d2b1a5e71a9e05318",
+      "urdf_sha256": "be80276223ca90363197d4316230173815b5ea45b1733ac514eb572ff1db786f",
+      "base_transforms": {
+        "left": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            -0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/shoes/piper",
+      "embodiment": "piper",
+      "status": "failed",
+      "shape": [
+        256,
+        14
+      ],
+      "successful_arm_frames": 436,
+      "total_arm_frames": 512,
+      "max_success_position_error_mm": 2.9981971875192475,
+      "max_success_rotation_error_deg": 1.8771999007119728,
+      "max_joint_step_rad": 2.4550262689590454,
+      "arms": {
+        "left": {
+          "successful_frames": 221,
+          "total_frames": 256,
+          "max_joint_step_rad": 0.2509995102882385
+        },
+        "right": {
+          "successful_frames": 215,
+          "total_frames": 256,
+          "max_joint_step_rad": 2.4550262689590454
+        }
+      },
+      "wall_time_seconds": 25.63280294102151,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/place_dual_shoes/episode_0000092",
+      "prediction_sha256": "8cdab35ecea473f72e075faa17f77553f6f1c923b399213d2b1a5e71a9e05318",
+      "urdf_sha256": "fa27856fc91f085877c4d022790372fe8d38f27000e7bc0c8bd091cc986c02c2",
+      "base_transforms": {
+        "left": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            -0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.45
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            -2.220446049250313e-16,
+            -1.0000000000000002,
+            0.0,
+            0.3
+          ],
+          [
+            1.0000000000000002,
+            -2.220446049250313e-16,
+            0.0,
+            -0.45
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    },
+    {
+      "directory": "/tmp/robotwin_trajectory_validation_20260913_final/shoes/ur5_wsg",
+      "embodiment": "ur5-wsg",
+      "status": "success",
+      "shape": [
+        256,
+        14
+      ],
+      "successful_arm_frames": 512,
+      "total_arm_frames": 512,
+      "max_success_position_error_mm": 2.8463087127697064,
+      "max_success_rotation_error_deg": 1.8977145402199669,
+      "max_joint_step_rad": 0.15348577499389648,
+      "arms": {
+        "left": {
+          "successful_frames": 256,
+          "total_frames": 256,
+          "max_joint_step_rad": 0.15348577499389648
+        },
+        "right": {
+          "successful_frames": 256,
+          "total_frames": 256,
+          "max_joint_step_rad": 0.12507205456495285
+        }
+      },
+      "wall_time_seconds": 12.452057001995854,
+      "episode": "/home/shengyu/Documents/PENG/github/Lerobot_Datasets/4d_datasets/place_dual_shoes/episode_0000092",
+      "prediction_sha256": "8cdab35ecea473f72e075faa17f77553f6f1c923b399213d2b1a5e71a9e05318",
+      "urdf_sha256": "3fb7a965dd5c2d04f9f6ffbda7a3c67d88fe1d7362bc6be1f57f3dbe4efe8cb4",
+      "base_transforms": {
+        "left": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            -0.3
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.65
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "right": [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.3
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            -0.65
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.65
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "optimizer_errors": []
+    }
+  ],
+  "limitations": "Franka and Piper episodes did not yield fully valid trajectories; their candidate files are not accepted robot states. Sampled search failure is not a proof of infeasibility."
+}

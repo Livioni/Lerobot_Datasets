@@ -1,0 +1,152 @@
+[
+  {
+    "directory": "4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/franka_panda",
+    "side": "left",
+    "world_root": [
+      -0.3,
+      -0.65,
+      0.75
+    ],
+    "counts": {
+      "success": 247,
+      "failure": 9,
+      "fallback_used": 11,
+      "fallback_success": 2
+    },
+    "max_joint_step_rad": 4.155872344970703,
+    "large_step_frames": [
+      14,
+      22,
+      213
+    ]
+  },
+  {
+    "directory": "4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/franka_panda",
+    "side": "right",
+    "world_root": [
+      0.3,
+      -0.65,
+      0.75
+    ],
+    "counts": {
+      "success": 252,
+      "failure": 4,
+      "fallback_used": 6,
+      "fallback_success": 2
+    },
+    "max_joint_step_rad": 3.147292137145996,
+    "large_step_frames": [
+      13,
+      14,
+      20,
+      21,
+      22
+    ]
+  },
+  {
+    "directory": "4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/ur5_wsg",
+    "side": "left",
+    "world_root": [
+      -0.3,
+      -0.65,
+      0.65
+    ],
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 6,
+      "fallback_success": 6
+    },
+    "max_joint_step_rad": 0.21069425344467163,
+    "large_step_frames": []
+  },
+  {
+    "directory": "4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/ur5_wsg",
+    "side": "right",
+    "world_root": [
+      0.3,
+      -0.65,
+      0.65
+    ],
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 3,
+      "fallback_success": 3
+    },
+    "max_joint_step_rad": 3.2032127380371094,
+    "large_step_frames": [
+      89,
+      90,
+      91
+    ]
+  },
+  {
+    "directory": "4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/ur5_wsg_continuous",
+    "side": "left",
+    "world_root": [
+      -0.3,
+      -0.65,
+      0.65
+    ],
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 6,
+      "fallback_success": 6
+    },
+    "max_joint_step_rad": 0.21069425344467163,
+    "large_step_frames": []
+  },
+  {
+    "directory": "4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/ur5_wsg_continuous",
+    "side": "right",
+    "world_root": [
+      0.3,
+      -0.65,
+      0.65
+    ],
+    "counts": {
+      "success": 256,
+      "failure": 0,
+      "fallback_used": 2,
+      "fallback_success": 2
+    },
+    "max_joint_step_rad": 0.16771113872528076,
+    "large_step_frames": []
+  },
+  {
+    "directory": "/tmp/robotwin_continuity_guard/franka_panda",
+    "side": "left",
+    "world_root": [
+      -0.3,
+      -0.65,
+      0.75
+    ],
+    "counts": {
+      "success": 52,
+      "failure": 204,
+      "fallback_used": 205,
+      "fallback_success": 1
+    },
+    "max_joint_step_rad": 0.44162803888320923,
+    "large_step_frames": []
+  },
+  {
+    "directory": "/tmp/robotwin_continuity_guard/franka_panda",
+    "side": "right",
+    "world_root": [
+      0.3,
+      -0.65,
+      0.75
+    ],
+    "counts": {
+      "success": 9,
+      "failure": 247,
+      "fallback_used": 248,
+      "fallback_success": 1
+    },
+    "max_joint_step_rad": 0.06852078437805176,
+    "large_step_frames": []
+  }
+]

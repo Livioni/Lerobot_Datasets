@@ -1,0 +1,54 @@
+franka-panda:
+  translation_m:
+  - 0
+  - 0
+  - 0.105779542
+  definition: Midpoint of area-weighted centroids of the two terminal inner contact
+    surfaces at limit-clamped closed gripper positions; fixed virtual closing point
+    when open.
+  method: 'Inward finger faces: normal -Y > 0.999, y within 0.0001 m of -0.0001 m,
+    z > 0.035 m; mirror right visual/collision origin.'
+  mesh_sha256:
+    franka_description/meshes/collision/finger.stl: 2d07a740392f3b9b0816f65d64fff9927d3d57c897870fc4b6ff9c56fff3a0c8
+  urdf_sha256: be80276223ca90363197d4316230173815b5ea45b1733ac514eb572ff1db786f
+ARX-X5:
+  translation_m:
+  - 0.149335045
+  - -2.0e-06
+  - -0.000853987
+  definition: Midpoint of area-weighted centroids of the two terminal inner contact
+    surfaces at limit-clamped closed gripper positions; fixed virtual closing point
+    when open.
+  method: Two terminal inner planes at local y = -/+0.0244944 m, tolerance 2e-6 m,
+    inward normal cosine > 0.999.
+  mesh_sha256:
+    meshes/link7.STL: ec3d40b39cccde0075ca3d16603f14f180fce41a46b446473d384def7a1b0be0
+    meshes/link8.STL: 29f7a8379cad81797e82e4ba099455cc275ac6ac5bb9e264ce46719fd7d2bb60
+  urdf_sha256: 7aaa308a1a5b6a213d914db86ba09ddd6252f25cb498ac9a148bfa6c7166a423
+piper:
+  translation_m:
+  - 4.0e-09
+  - 0
+  - 0.134833004
+  definition: Midpoint of area-weighted centroids of the two terminal inner contact
+    surfaces at limit-clamped closed gripper positions; fixed virtual closing point
+    when open.
+  method: Terminal inner faces at local z = 0, tolerance 2e-6 m, normal +Z cosine
+    > 0.999; include joint origin rotations.
+  mesh_sha256:
+    meshes/link7.STL: 907dcdd10498a9d2e9317e42f550570a4ca522d1c4ff7b7c8721fd5cb951e481
+    meshes/link8.STL: 5552c0fda737f3abfa1e324ee8a4284dc473a17a0ca5fcbf35d61ca3e6701a18
+  urdf_sha256: fa27856fc91f085877c4d022790372fe8d38f27000e7bc0c8bd091cc986c02c2
+ur5-wsg:
+  translation_m:
+  - 0.143500001
+  - -1.3823e-05
+  - 1.3823e-05
+  definition: Midpoint of area-weighted centroids of the two terminal inner contact
+    surfaces at limit-clamped closed gripper positions; fixed virtual closing point
+    when open.
+  method: Terminal contact pads at local x = 0.003 m, tolerance 2e-6 m, normal +X
+    cosine > 0.999; include WSG mount and guide joints.
+  mesh_sha256:
+    meshes/gripper/WSG-FMF.stl: b3fea07748d7b49d5d46c47ce96eeb3ef011437083ebd25452a42ace84675f3f
+  urdf_sha256: 3fb7a965dd5c2d04f9f6ffbda7a3c67d88fe1d7362bc6be1f57f3dbe4efe8cb4

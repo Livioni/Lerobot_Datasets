@@ -207,3 +207,56 @@ p_camera = T_camera_base @ p_base
 它会把机器人 `footprint` 坐标系中的点转换到 OpenCV 相机坐标系（`+X` 向右、`+Y` 向下、`+Z` 向前）。脚本会求逆得到相机在 base 坐标系中的位姿。Rerun 使用相机字段名命名标定回放标签页，同时保留自由视角的 `Robot replay` 标签页用于对照。
 
 `--camera-resolution` 的参数顺序为 `HEIGHT WIDTH`。当标定文件中只有一个相机时，脚本会自动推断 `--camera-feature`。
+
+
+
+
+## 远程可视化
+
+### 生成可视化的rrd文件
+
+```bash
+    python visualize_robotwin_tcp_prediction_rerun.py \
+      4d_datasets/place_dual_shoes/episode_0000092 \
+      --output rrd_output/place_dual_shoes_tcp_comparison.rrd
+```
+
+```bash
+rerun \
+  --serve-web \
+  --bind 127.0.0.1 \
+  --port 9877 \
+  --web-viewer-port 9091 \
+  rrd_output/ik/franka_panda_homestate.rrd
+```
+
+
+## 逆运动学求解 Robot State
+
+[`solve_robotwin_tcp_curobo_ik.py`](solve_robotwin_tcp_curobo_ik.py) 与五种本体入口现统一对**整个 TCP 轨迹**求解：批量搜索 IK 候选、动态规划选择整段解分支、联合优化全部关节帧。完整说明见 [`robotwin_ik/README.md`](robotwin_ik/README.md)。
+
+保持原 TCP 目标、时间戳和夹爪命令。最终 float32 输出须满足位置误差 ≤3 mm、朝向误差 ≤2°、关节限位、单臂自碰撞检查及默认 0.5 rad 的相邻关节步长限制。速度与加速度按原时间参与平滑优化和诊断，不设硬上限。初态来自代码内置的目标本体样例首帧，可用 `--initial-state-hdf5` 覆盖；不使用源 episode 的关节状态。
+
+```bash
+conda run --no-capture-output -n RoboTwin python solve_robotwin_tcp_curobo_ik.py \
+  4d_datasets/place_dual_shoes/episode_0000092 \
+  --output-dir outputs/aloha_trajectory
+
+conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_franka_panda.py \
+  4d_datasets/place_dual_shoes/episode_0000092 \
+  --ik-seeds 64 --max-joint-step-rad 0.5 \
+  --output-dir outputs/franka_trajectory
+```
+
+需要兼容 `curobo.wrap.reacher.ik_solver` 的 cuRobo、CUDA PyTorch、NumPy 和 PyYAML；本机可用 `RoboTwin` Conda 环境。`--help` 不加载 CUDA，旧 `--fallback-seeds` 参数已删除。`--ik-seeds` 默认 64，断开的搜索最多扩展到 256；步长参数必须为正数。仍支持 `--prediction-json`、`--device`、`--output-dir` 和显式 `--overwrite`。
+
+两臂全程通过时保存 `robot_state.npy`，退出码为 0；未通过时仅保存 `robot_state_candidate.npy`，状态为 `failed`，退出码为 1。两者均有 v3 `metadata.json` 和 `diagnostics.json`，记录 TCP 残差、步长、速度、加速度和失败位置。环境或求解异常记录为 `solver_error.json`，不生成伪造轨迹。
+
+```bash
+# 成功结果回放；失败结果需显式增加 --show-candidate。
+conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
+  4d_datasets/place_dual_shoes/episode_0000092 \
+  --ik-dir outputs/franka_trajectory --output outputs/franka.rrd
+```
+
+CUDA 扩展仍使用 PyTorch JIT 缓存；`loading via PyTorch JIT cache (builds only if needed)` 不表示每次重新编译。该求解器不新增桌面或跨臂避碰；候选搜索失败不证明数学上不存在可行解。

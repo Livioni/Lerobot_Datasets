@@ -13,7 +13,7 @@ By default it opens the requested ``beat_block_hammer`` episode:
 To save a recording instead of opening the viewer:
 
     conda run -n rerun python visualize_robotwin_tcp_prediction_rerun.py \
-        --output /tmp/beat_block_hammer_tcp_comparison.rrd
+        --output rrd_output/place_dual_shoes_tcp_comparison.rrd
 """
 
 from __future__ import annotations
@@ -154,6 +154,95 @@ def orientation_errors_deg(
     return np.rad2deg(np.arccos(cosine))
 
 
+def load_prediction_robot_state(path: Path, frame_count: int) -> np.ndarray:
+    """Load and validate a solver-produced RoboTwin [T,14] state."""
+    try:
+        state = np.asarray(np.load(path, allow_pickle=False), dtype=np.float64)
+    except OSError as error:
+        raise ValueError(f"Could not read prediction robot state {path}: {error}") from error
+    if state.shape != (frame_count, 14):
+        raise ValueError(
+            f"{path} has shape {state.shape}; expected ({frame_count}, 14)"
+        )
+    if not np.all(np.isfinite(state)):
+        raise ValueError(f"{path} contains non-finite values")
+    for column in (6, 13):
+        if not set(np.unique(state[:, column])).issubset({0.0, 1.0}):
+            raise ValueError(f"{path} gripper column {column} is not binary")
+    return state
+
+
+def wrapped_joint_errors(
+    ground_truth: np.ndarray, prediction: np.ndarray
+) -> np.ndarray:
+    """Return signed joint error in [-pi, pi], independent of angle wrapping."""
+    delta = prediction - ground_truth
+    return np.arctan2(np.sin(delta), np.cos(delta))
+
+
+def make_joint_summary(
+    ground_truth: np.ndarray, prediction: np.ndarray
+) -> tuple[dict[str, Any], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Compute per-joint error and prediction continuity statistics."""
+    metrics: dict[str, Any] = {}
+    errors_deg: dict[str, np.ndarray] = {}
+    joint_values_deg: dict[str, np.ndarray] = {}
+    for side, prefix, offset in (
+        ("left", "fl", 0),
+        ("right", "fr", 7),
+    ):
+        ground_truth_arm = ground_truth[:, offset : offset + 6]
+        prediction_arm = prediction[:, offset : offset + 6]
+        error = wrapped_joint_errors(ground_truth_arm, prediction_arm)
+        error_deg = np.rad2deg(error)
+        errors_deg[side] = error_deg
+        joint_values_deg[f"{side}_ground_truth"] = np.rad2deg(ground_truth_arm)
+        joint_values_deg[f"{side}_prediction"] = np.rad2deg(prediction_arm)
+
+        per_joint: list[dict[str, Any]] = []
+        for joint_index in range(6):
+            values = error_deg[:, joint_index]
+            per_joint.append(
+                {
+                    "name": f"{prefix}_joint{joint_index + 1}",
+                    "mae_deg": float(np.mean(np.abs(values))),
+                    "rmse_deg": float(np.sqrt(np.mean(values**2))),
+                    "max_abs_deg": float(np.max(np.abs(values))),
+                }
+            )
+
+        if len(prediction_arm) > 1:
+            steps = wrapped_joint_errors(prediction_arm[:-1], prediction_arm[1:])
+            max_flat = int(np.argmax(np.abs(steps)))
+            step_index, joint_index = np.unravel_index(max_flat, steps.shape)
+            step_values = np.abs(steps)
+            continuity = {
+                "max_abs_step_deg": float(
+                    np.rad2deg(step_values[step_index, joint_index])
+                ),
+                "frame_index": int(step_index + 1),
+                "joint_name": f"{prefix}_joint{joint_index + 1}",
+                "p95_abs_step_deg": float(np.rad2deg(np.percentile(step_values, 95))),
+                "p99_abs_step_deg": float(np.rad2deg(np.percentile(step_values, 99))),
+            }
+        else:
+            continuity = {
+                "max_abs_step_deg": 0.0,
+                "frame_index": 0,
+                "joint_name": f"{prefix}_joint1",
+                "p95_abs_step_deg": 0.0,
+                "p99_abs_step_deg": 0.0,
+            }
+        metrics[side] = {
+            "mae_deg": float(np.mean(np.abs(error_deg))),
+            "rmse_deg": float(np.sqrt(np.mean(error_deg**2))),
+            "max_abs_deg": float(np.max(np.abs(error_deg))),
+            "per_joint": per_joint,
+            "continuity": continuity,
+        }
+    return metrics, errors_deg, joint_values_deg
+
+
 def bind_spatial_entities_to_footprint() -> None:
     """Attach all comparison geometry to the URDF footprint frame."""
     entity_paths = ["robot/scene"]
@@ -191,6 +280,9 @@ def make_summary(
     position_errors_cm: dict[str, np.ndarray],
     orientation_errors: dict[str, np.ndarray],
     gripper_accuracy: dict[str, float],
+    prediction_robot_state_path: Path | None,
+    robot_source: str,
+    joint_metrics: dict[str, Any] | None,
 ) -> str:
     history_description = (
         "all elapsed samples" if history == 0 else f"last {history} samples"
@@ -202,6 +294,7 @@ def make_summary(
         f"- Ground truth: `{ground_truth_dir}`",
         f"- Camera frame: `{camera}` (OpenCV RDF)",
         "- Display frame: robot footprint (FLU)",
+        f"- URDF replay source: `{robot_source}`",
         f"- Trajectory history: {history_description}",
         f"- Gripper threshold: {float(_gripper_threshold(prediction_metadata)):.3g}",
         "",
@@ -211,7 +304,7 @@ def make_summary(
         "- Right GT: orange; right prediction: magenta",
         "- Red segment: current GT-to-prediction position error",
         "",
-        "## Episode metrics",
+        "## TCP episode metrics",
         "",
         "| Arm | Position mean / max | Orientation mean / max | Gripper accuracy |",
         "|---|---:|---:|---:|",
@@ -224,6 +317,43 @@ def make_summary(
             f"{orientation.mean():.2f} / {orientation.max():.2f} deg | "
             f"{100.0 * gripper_accuracy[side]:.1f}% |"
         )
+
+    if joint_metrics is not None and prediction_robot_state_path is not None:
+        lines.extend(
+            [
+                "",
+                "## CuRobo IK joint metrics",
+                "",
+                f"Prediction state: `{prediction_robot_state_path}`",
+                "",
+                "Wrapped errors compare prediction-TCP IK with ground-truth joints; "
+                "ground truth was not used as per-frame IK seed.",
+                "",
+                "| Arm | Wrapped MAE | RMSE | Max abs | Max prediction step |",
+                "|---|---:|---:|---:|---:|",
+            ]
+        )
+        for side in ("left", "right"):
+            arm = joint_metrics[side]
+            continuity = arm["continuity"]
+            lines.append(
+                f"| {side} | {arm['mae_deg']:.2f}° | {arm['rmse_deg']:.2f}° | "
+                f"{arm['max_abs_deg']:.2f}° | {continuity['max_abs_step_deg']:.2f}° "
+                f"({continuity['joint_name']}, frame {continuity['frame_index']}) |"
+            )
+        lines.extend(
+            [
+                "",
+                "| Joint | MAE | RMSE | Max abs |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for side in ("left", "right"):
+            for joint in joint_metrics[side]["per_joint"]:
+                lines.append(
+                    f"| {joint['name']} | {joint['mae_deg']:.2f}° | "
+                    f"{joint['rmse_deg']:.2f}° | {joint['max_abs_deg']:.2f}° |"
+                )
     return "\n".join(lines)
 
 
@@ -259,7 +389,7 @@ def log_static_scene(
     )
 
 
-def make_blueprint(show_rgb: bool) -> rrb.Blueprint:
+def make_blueprint(show_rgb: bool, show_joints: bool) -> rrb.Blueprint:
     spatial = rrb.Spatial3DView(
         origin="robot", name="Robot replay: prediction vs ground truth"
     )
@@ -274,12 +404,24 @@ def make_blueprint(show_rgb: bool) -> rrb.Blueprint:
         upper = rrb.Horizontal(spatial, rgb, column_shares=[2, 1])
     else:
         upper = spatial
+    tcp_row = rrb.Horizontal(info, errors, grippers, column_shares=[2, 2, 1])
+    if show_joints:
+        joint_row = rrb.Horizontal(
+            rrb.TimeSeriesView(origin="signals/joints/left", name="Left joints: GT vs IK [deg]"),
+            rrb.TimeSeriesView(origin="signals/joints/right", name="Right joints: GT vs IK [deg]"),
+            rrb.TimeSeriesView(
+                origin="signals/joint_errors/left", name="Left wrapped joint error [deg]"
+            ),
+            rrb.TimeSeriesView(
+                origin="signals/joint_errors/right", name="Right wrapped joint error [deg]"
+            ),
+            column_shares=[1, 1, 1, 1],
+        )
+        contents = rrb.Vertical(upper, tcp_row, joint_row, row_shares=[3, 1, 1])
+    else:
+        contents = rrb.Vertical(upper, tcp_row, row_shares=[3, 1])
     return rrb.Blueprint(
-        rrb.Vertical(
-            upper,
-            rrb.Horizontal(info, errors, grippers, column_shares=[2, 2, 1]),
-            row_shares=[3, 1],
-        ),
+        contents,
         rrb.TimePanel(timeline=TIMELINE, expanded=True),
         auto_views=False,
         collapse_panels=True,
@@ -342,6 +484,20 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.08,
         help="TCP coordinate-axis length in metres",
+    )
+    parser.add_argument(
+        "--prediction-robot-state",
+        type=Path,
+        help=(
+            "CuRobo IK [T,14] state; when omitted, use "
+            "<episode>/TCP_prediction_ik/robot_state.npy if it exists"
+        ),
+    )
+    parser.add_argument(
+        "--robot-source",
+        choices=("ground-truth", "prediction"),
+        default="ground-truth",
+        help="Joint state used to drive the single URDF replay",
     )
     robot_group = parser.add_mutually_exclusive_group()
     robot_group.add_argument(
@@ -508,6 +664,50 @@ def main() -> None:
         )
         for side in ("left", "right")
     }
+    default_prediction_robot_state = (
+        episode / "TCP_prediction_ik" / "robot_state.npy"
+    )
+    prediction_robot_state_path = (
+        args.prediction_robot_state.expanduser().resolve()
+        if args.prediction_robot_state is not None
+        else default_prediction_robot_state if default_prediction_robot_state.is_file() else None
+    )
+    if args.prediction_robot_state is not None and not prediction_robot_state_path.is_file():
+        raise SystemExit(
+            f"Prediction robot state not found: {prediction_robot_state_path}"
+        )
+    try:
+        prediction_robot_state = (
+            load_prediction_robot_state(prediction_robot_state_path, frame_count)
+            if prediction_robot_state_path is not None
+            else None
+        )
+        need_ground_truth_robot_state = (
+            not args.no_robot
+            or prediction_robot_state is not None
+            or args.robot_source == "prediction"
+        )
+        ground_truth_robot_state = (
+            base_viz.load_robot_state(episode, frame_count)
+            if need_ground_truth_robot_state
+            else None
+        )
+    except (OSError, ValueError) as error:
+        raise SystemExit(str(error)) from error
+    if args.robot_source == "prediction" and prediction_robot_state is None:
+        raise SystemExit(
+            "--robot-source prediction requires --prediction-robot-state or "
+            "<episode>/TCP_prediction_ik/robot_state.npy"
+        )
+
+    if prediction_robot_state is not None and ground_truth_robot_state is not None:
+        joint_metrics, joint_error_degrees, joint_value_degrees = make_joint_summary(
+            ground_truth_robot_state, prediction_robot_state
+        )
+    else:
+        joint_metrics = None
+        joint_error_degrees = {}
+        joint_value_degrees = {}
     summary = make_summary(
         episode,
         prediction_path,
@@ -518,10 +718,16 @@ def main() -> None:
         position_errors_cm,
         orientation_errors,
         gripper_accuracy,
+        prediction_robot_state_path,
+        args.robot_source,
+        joint_metrics,
     )
-    robot_state = (
-        base_viz.load_robot_state(episode, frame_count) if not args.no_robot else None
-    )
+    if args.no_robot:
+        robot_state = None
+    elif args.robot_source == "prediction":
+        robot_state = prediction_robot_state
+    else:
+        robot_state = ground_truth_robot_state
 
     rr.init(
         f"robotwin_tcp_comparison_{camera}_{episode.parent.name}_{episode.name}",
@@ -543,7 +749,9 @@ def main() -> None:
         recording.spawn(port=port)
 
     log_static_scene(intrinsic, width, height, summary)
-    rr.send_blueprint(make_blueprint(not args.no_rgb))
+    rr.send_blueprint(
+        make_blueprint(not args.no_rgb, prediction_robot_state is not None)
+    )
 
     with tempfile.TemporaryDirectory(prefix="robotwin-tcp-comparison-") as temporary:
         if robot_state is not None:
@@ -554,7 +762,7 @@ def main() -> None:
         print(
             f"Loading {episode.parent.name}/{episode.name}: {frame_count} frames, "
             f"prediction={prediction_path.name}, ground_truth={args.ground_truth_dir}, "
-            f"camera={camera}"
+            f"camera={camera}, robot_source={args.robot_source}"
         )
         for frame_index in range(frame_count):
             rr.set_time(TIMELINE, duration=float(timestamps[frame_index]))
@@ -697,6 +905,41 @@ def main() -> None:
                     f"signals/grippers/{side}_prediction_probability",
                     rr.Scalars(float(prediction[side][frame_index, 6])),
                 )
+
+            if prediction_robot_state is not None:
+                for side in ("left", "right"):
+                    for joint_index in range(6):
+                        entity = f"signals/joints/{side}/joint_{joint_index + 1}"
+                        rr.log(
+                            f"{entity}/ground_truth_deg",
+                            rr.Scalars(
+                                float(
+                                    joint_value_degrees[f"{side}_ground_truth"][
+                                        frame_index, joint_index
+                                    ]
+                                )
+                            ),
+                        )
+                        rr.log(
+                            f"{entity}/prediction_deg",
+                            rr.Scalars(
+                                float(
+                                    joint_value_degrees[f"{side}_prediction"][
+                                        frame_index, joint_index
+                                    ]
+                                )
+                            ),
+                        )
+                        rr.log(
+                            f"signals/joint_errors/{side}/joint_{joint_index + 1}_wrapped_deg",
+                            rr.Scalars(
+                                float(
+                                    joint_error_degrees[side][
+                                        frame_index, joint_index
+                                    ]
+                                )
+                            ),
+                        )
 
         recording.flush()
 
