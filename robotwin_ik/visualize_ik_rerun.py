@@ -11,6 +11,7 @@ import numpy as np
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import convert_robotwin_tcp as urdf
+from rerun_viewer import add_viewer_arguments, configure_rerun_output, wait_for_web_viewer
 from robotwin_ik._io import load_prediction, load_extrinsics
 from robotwin_ik._embodiments import DEFAULT_EMBODIMENTS_ROOT, sha256
 from robotwin_ik._kinematics import fk_link, joint_matrix, gripper_positions
@@ -32,10 +33,10 @@ def parse_args(argv=None):
     p.add_argument('episode', type=Path)
     p.add_argument('--ik-dir', required=True, type=Path)
     p.add_argument('--embodiments-root', type=Path, default=DEFAULT_EMBODIMENTS_ROOT)
-    p.add_argument('--output', type=Path, help='Save .rrd instead of opening viewer')
+    add_viewer_arguments(p)
     p.add_argument('--no-rgb', action='store_true')
     p.add_argument('--no-point-cloud', action='store_true')
-    p.add_argument('--point-cloud-stride', type=positive_int, default=4)
+    p.add_argument('--point-cloud-stride', type=positive_int, default=2)
     p.add_argument('--history', type=positive_int, default=30)
     p.add_argument('--show-candidate', action='store_true', help='Replay an explicitly failed trajectory candidate')
     return p.parse_args(argv)
@@ -159,11 +160,11 @@ def main(argv=None):
     import rerun as rr
     import rerun.blueprint as rrb
     from PIL import Image
-    rr.init('robotwin_closed_tcp_' + meta['embodiment'], spawn=args.output is None)
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        rr.save(args.output)
+    rr.init('robotwin_closed_tcp_' + meta['embodiment'], spawn=False)
     recording = rr.get_global_data_recording()
+    if recording is None:
+        raise SystemExit('Rerun recording failed to initialize')
+    use_web = configure_rerun_output(recording, args.output, web=args.web)
     rr.log('world', rr.CoordinateFrame('world'), rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     # Explicit frame IDs do not inherit from entity-path parents in Rerun 0.35.
     spatial_paths = ['world/scene']
@@ -265,6 +266,8 @@ def main(argv=None):
                     rr.log(f'joints/{side}/{name}', rr.Scalars(float(values[name])))
     recording.flush()
     print(f'Replayed {meta["embodiment"]}: {count} frames' + (f' -> {args.output}' if args.output else ''))
+    if use_web:
+        wait_for_web_viewer(recording)
 
 
 if __name__ == '__main__':

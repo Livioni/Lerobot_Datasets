@@ -16,7 +16,6 @@ The repository includes three compact LeRobot v3.0 examples under [`assets/examp
 - Automatically replay Piper/ALOHA and RoboTwin/Arx5 joint states with URDF models.
 - Inspect unsupported embodiments, such as the included LIBERO/Franka example, as video and signals only.
 - Reconstruct a fixed calibrated camera view from an OpenCV extrinsic matrix.
-- Save a portable Rerun `.rrd` recording instead of opening the viewer.
 - Export episodes as camera mosaics or independent MP4 files.
 - Convert consolidated LeRobot v3.0 datasets to the per-episode v2.1 layout.
 
@@ -137,11 +136,9 @@ python visualize_lerobot_rerun.py \
 
 ## Web viewer on headless machines
 
-The four scripts `visualize_lerobot_rerun.py`, `visualize_lerobot_rerun_v21.py`, `visualize_robotwin_tcp_rerun.py`, and `visualize_robotwin_tcp_prediction_rerun.py` share the same viewer behavior. On Linux, each automatically starts the Web viewer when `DISPLAY`, `WAYLAND_DISPLAY`, and `WAYLAND_SOCKET` are all unset or empty. Run the same command as above; no extra flag is needed. Use `--web` to select the Web viewer manually, including on a desktop.
+The LeRobot v3/v2.1, RoboTwin TCP/prediction, and [`robotwin_ik/visualize_ik_rerun.py`](robotwin_ik/visualize_ik_rerun.py) viewers automatically use Web mode on Linux without an X11/Wayland display. Existing commands work as-is; add `--web` to select Web mode manually.
 
-The terminal prints a browser URL and an SSH forwarding command. When running on a remote machine, run that SSH command on your own computer (replace `<user>@<server>`), then open the printed URL locally. Both the Web port (normally `9090`) and the data port (normally `9876`) must be forwarded; occupied ports are replaced automatically and the printed command uses the selected ports.
-
-Keep the visualization process running while viewing; press `Ctrl+C` to stop. `--output recording.rrd` still saves a file and exits without starting a viewer.
+Open the URL printed in the terminal. For remote use, first run the printed SSH forwarding command on your computer, replacing `<user>@<server>`; it forwards both the Web and data ports. Keep the visualization process running and press `Ctrl+C` to stop. See the [IK guide](robotwin_ik/README.md) for solving and visualizing joint trajectories.
 
 ## RGB-D point clouds in the base frame
 

@@ -16,7 +16,6 @@
 - 根据数据自动使用 URDF 回放 Piper/ALOHA 和 RoboTwin/Arx5 关节状态。
 - 对暂不支持机器人模型的 embodiment（例如示例中的 LIBERO/Franka）显示视频和数值信号。
 - 根据 OpenCV 外参重建固定标定相机视角。
-- 将结果保存为可移植的 Rerun `.rrd` 记录，而不启动查看器。
 - 将 episode 导出为相机拼图或独立 MP4 文件。
 - 将合并存储的 LeRobot v3.0 数据集转换为逐 episode 的 v2.1 布局。
 
@@ -137,11 +136,9 @@ python visualize_lerobot_rerun.py \
 
 ## 无显示器时使用 Web 可视化
 
-`visualize_lerobot_rerun.py`、`visualize_lerobot_rerun_v21.py`、`visualize_robotwin_tcp_rerun.py` 和 `visualize_robotwin_tcp_prediction_rerun.py` 使用相同的查看器启动逻辑。在 Linux 上，当 `DISPLAY`、`WAYLAND_DISPLAY` 和 `WAYLAND_SOCKET` 都未设置或为空时，都会自动启动 Web 查看器。直接运行原来的命令即可，无需额外参数；也可以添加 `--web` 手动选择 Web 模式，包括在桌面环境中。
+LeRobot v3/v2.1、RoboTwin TCP/预测对比和 [`robotwin_ik/visualize_ik_rerun.py`](robotwin_ik/visualize_ik_rerun.py) 在 Linux 无 X11/Wayland 显示环境时会自动使用 Web 模式。原命令无需改动，也可加 `--web` 手动启用。
 
-终端会打印浏览器访问地址和 SSH 端口转发命令。如果脚本运行在远程机器上，请在自己的电脑上执行打印的 SSH 命令（替换 `<user>@<server>`），然后在本地浏览器打开打印的地址。需要同时转发 Web 端口（通常为 `9090`）和数据端口（通常为 `9876`）；端口被占用时会自动选择空闲端口，打印的命令会使用实际端口。
-
-查看期间请保持可视化进程运行，按 `Ctrl+C` 停止。`--output recording.rrd` 仍然只保存文件并退出，不启动查看器。
+打开终端打印的浏览器地址即可。远程运行时，先在自己的电脑执行打印的 SSH 转发命令（替换 `<user>@<server>`），同时转发 Web 和数据端口。查看期间保持可视化进程运行，按 `Ctrl+C` 停止。
 
 ## Base 坐标系 RGB-D 点云
 
@@ -216,55 +213,27 @@ p_camera = T_camera_base @ p_base
 
 `--camera-resolution` 的参数顺序为 `HEIGHT WIDTH`。当标定文件中只有一个相机时，脚本会自动推断 `--camera-feature`。
 
+## 逆运动学求解与可视化
 
-
-
-## 远程可视化
-
-### 生成可视化的rrd文件
+将预测 TCP 转为指定本体的整段关节轨迹，再直接查看机器人、目标与实际 TCP、RGB/点云和误差曲线。支持 Franka Panda、ARX-X5、Piper、UR5-WSG 和 Aloha-Agilex，完整参数与验收条件见 [`robotwin_ik/README.md`](robotwin_ik/README.md)。
 
 ```bash
-    python visualize_robotwin_tcp_prediction_rerun.py \
-      4d_datasets/place_dual_shoes/episode_0000092 \
-      --output rrd_output/place_dual_shoes_tcp_comparison.rrd
+conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_arx_x5.py \
+  4d_datasets/beat_block_hammer/episode_0000000
+
+conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
+  4d_datasets/beat_block_hammer/episode_0000000 \
+  --ik-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/arx_x5
 ```
 
+ur5-wsg
 ```bash
-rerun \
-  --serve-web \
-  --bind 127.0.0.1 \
-  --port 9877 \
-  --web-viewer-port 9091 \
-  rrd_output/ik/franka_panda_homestate.rrd
-```
+conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_ur5_wsg.py \
+  4d_datasets/place_dual_shoes/episode_0000092
 
-
-## 逆运动学求解 Robot State
-
-[`solve_robotwin_tcp_curobo_ik.py`](solve_robotwin_tcp_curobo_ik.py) 与五种本体入口现统一对**整个 TCP 轨迹**求解：批量搜索 IK 候选、动态规划选择整段解分支、联合优化全部关节帧。完整说明见 [`robotwin_ik/README.md`](robotwin_ik/README.md)。
-
-保持原 TCP 目标、时间戳和夹爪命令。最终 float32 输出须满足位置误差 ≤3 mm、朝向误差 ≤2°、关节限位、单臂自碰撞检查及默认 0.5 rad 的相邻关节步长限制。速度与加速度按原时间参与平滑优化和诊断，不设硬上限。初态来自代码内置的目标本体样例首帧，可用 `--initial-state-hdf5` 覆盖；不使用源 episode 的关节状态。
-
-```bash
-conda run --no-capture-output -n RoboTwin python solve_robotwin_tcp_curobo_ik.py \
-  4d_datasets/place_dual_shoes/episode_0000092 \
-  --output-dir outputs/aloha_trajectory
-
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_franka_panda.py \
-  4d_datasets/place_dual_shoes/episode_0000092 \
-  --ik-seeds 64 --max-joint-step-rad 0.5 \
-  --output-dir outputs/franka_trajectory
-```
-
-需要兼容 `curobo.wrap.reacher.ik_solver` 的 cuRobo、CUDA PyTorch、NumPy 和 PyYAML；本机可用 `RoboTwin` Conda 环境。`--help` 不加载 CUDA，旧 `--fallback-seeds` 参数已删除。`--ik-seeds` 默认 64，断开的搜索最多扩展到 256；步长参数必须为正数。仍支持 `--prediction-json`、`--device`、`--output-dir` 和显式 `--overwrite`。
-
-两臂全程通过时保存 `robot_state.npy`，退出码为 0；未通过时仅保存 `robot_state_candidate.npy`，状态为 `failed`，退出码为 1。两者均有 v3 `metadata.json` 和 `diagnostics.json`，记录 TCP 残差、步长、速度、加速度和失败位置。环境或求解异常记录为 `solver_error.json`，不生成伪造轨迹。
-
-```bash
-# 成功结果回放；失败结果需显式增加 --show-candidate。
 conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
   4d_datasets/place_dual_shoes/episode_0000092 \
-  --ik-dir outputs/franka_trajectory --output outputs/franka.rrd
+  --ik-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/ur5_wsg
 ```
 
-CUDA 扩展仍使用 PyTorch JIT 缓存；`loading via PyTorch JIT cache (builds only if needed)` 不表示每次重新编译。该求解器不新增桌面或跨臂避碰；候选搜索失败不证明数学上不存在可行解。
+无显示环境时自动启动 Web 查看器。失败结果需加 `--show-candidate` 查看候选；覆盖已有求解结果需加 `--overwrite`。
