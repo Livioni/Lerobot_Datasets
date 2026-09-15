@@ -1,0 +1,5 @@
+# Verified with Python 3.10 in the existing RoboTwin conda environment.
+numpy>=1.24,<3
+Pillow>=9
+PyYAML>=6
+sapien==3.0.0b1
