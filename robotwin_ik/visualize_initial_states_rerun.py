@@ -107,7 +107,9 @@ def main(argv=None):
                              f'Closed TCP XYZ (m): {np.round(tcp[:3, 3], 6).tolist()}', ''])
                 prepared = Path(temporary) / f'{name}_{side}.urdf'
                 prepare_visual(robot.urdf_path, prepared, name, side)
-                entity = f'{name}/{side}_robot'
+                # UrdfTree treats entity_path_prefix as one path segment, escaping '/'.
+                # Keep it flat so the blueprint filter matches emitted mesh entities.
+                entity = f'{name}_{side}_robot'
                 prefix = f'{name}/{side}/'
                 contents.append(entity+'/**')
                 tree = rr.urdf.UrdfTree.from_file_path(
