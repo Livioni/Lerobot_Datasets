@@ -126,6 +126,32 @@ python visualize_lerobot_rerun.py \
   --episode 0
 ```
 
+For example, this command shows the main-camera RGB, depth preview, and
+bimanual replay for the newly captured G106 dataset while retaining the W2
+example layout. It uses [`calibrations/w2_demo.yaml`](calibrations/w2_demo.yaml) for
+the `observation.images.cam_high` intrinsics/extrinsics, while the dataset's
+`robot_type: agilex_piper_bimanual` automatically selects the Agilex-Aloha
+Piper embodiment:
+
+```bash
+conda run --no-capture-output -n rerun python visualize_lerobot_rerun.py \
+  --root lerobot_datasets_v3.0/G106/stack_blocks_depth_lerobot \
+  --episode 0 \
+  --depth-feature observation.images.cam_high_depth \
+  --camera-calibration calibrations/w2_demo.yaml \
+  --camera-feature observation.images.cam_high \
+  --camera-resolution 480 640
+```
+
+`--depth-feature` adds only the main depth stream to the camera grid; omit it to
+show all native depth images in the dataset. The 2D view is a fixed-range,
+compressed grayscale preview, avoiding the Rerun gRPC congestion caused by
+sending every uint16 frame uncompressed. A colored point cloud is enabled
+automatically when compatible RGB-D and calibration are detected, using the
+default `--point-cloud-stride 2`. Reconstruction still uses the original metric
+depth, and only cameras with complete calibration are back-projected. Pass
+`--no-point-cloud` to disable it explicitly.
+
 If `--dataset` is omitted, the script selects the only detected dataset or opens an interactive selection menu. To inspect discovery without launching Rerun:
 
 ```bash
@@ -134,17 +160,33 @@ python visualize_lerobot_rerun.py \
   --list-datasets
 ```
 
+## DROID two-camera RGB-D and Franka replay
+
+[`visualize_droid_rerun.py`](visualize_droid_rerun.py) reads a DROID episode
+already extracted into `images/`, `depths/`, `intrinsic/`, `extrinsic/`,
+`observations/`, and `action/`. It synchronizes both third-person RGB/depth
+views, colored point clouds, a measured Franka Panda + Robotiq 2F-85 joint
+replay, two camera-matched robot views paired beside the source RGB images,
+measured/commanded TCP traces, and Cartesian, joint, and gripper state/action
+plots:
+
+```bash
+conda run --no-capture-output -n rerun python visualize_droid_rerun.py \
+  '4d_datasets/droid_episodes/AUTOLab__Fri_Aug_18_11:40:54_2023'
+```
+
+
 ## Web viewer on headless machines
 
-The LeRobot v3/v2.1, RoboTwin TCP/prediction, and [`robotwin_ik/visualize_ik_rerun.py`](robotwin_ik/visualize_ik_rerun.py) viewers automatically use Web mode on Linux without an X11/Wayland display. Existing commands work as-is; add `--web` to select Web mode manually.
+The LeRobot v3/v2.1, RoboTwin TCP/prediction, DROID, and [`robotwin_ik/visualize_ik_rerun.py`](robotwin_ik/visualize_ik_rerun.py) viewers automatically use Web mode on Linux without an X11/Wayland display. Existing commands work as-is; add `--web` to select Web mode manually.
 
 Open the URL printed in the terminal. For remote use, first run the printed SSH forwarding command on your computer, replacing `<user>@<server>`; it forwards both the Web and data ports. Keep the visualization process running and press `Ctrl+C` to stop. See the [IK guide](robotwin_ik/README.md) for solving and visualizing joint trajectories.
 
 ## RGB-D point clouds in the base frame
 
-Pass `--point-cloud` to discover compatible LeRobot v3 RGB-D pairs. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). When those columns are absent, `--camera-calibration` supplies static base-to-camera calibration for its matching stream. The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.
+Compatible LeRobot v3 RGB-D pairs are reconstructed automatically; use `--no-point-cloud` to disable them or `--point-cloud` to require at least one compatible pair. A depth feature named `observation.images.<camera>_depth` is paired with `observation.images.<camera>` and the per-frame `calibration.<camera>.intrinsic_matrix` plus `camera_pose_matrix` (or the inverse of `extrinsic_matrix`). When those columns are absent, `--camera-calibration` supplies static base-to-camera calibration for its matching stream. The resulting camera entities remain individually toggleable under `robot/scene_point_cloud`, while Rerun overlays them in the existing 3D robot view.
 
-Depth is decoded from the original high-bit-depth video with the quantization settings in `meta/info.json`. Each RGB pixel uses the same sampled row and column as its depth value. The default stride is `2`, so a 320×240 camera contributes at most 19,200 points per frame: 57,600 points for three cameras or 76,800 for the four-camera `RoboTwin2_third_view` example. Use `--point-cloud-stride 1` for full resolution or a larger value for lighter recordings.
+Depth may be stored either as an original high-bit-depth video or as a native LeRobot `image` column in parquet. Video depth is decoded with the quantization settings in `meta/info.json`; native image depth retains its physical values (such as uint16) and is converted according to `depth_unit` (`mm` or `m`). Each RGB pixel uses the same sampled row and column as its depth value. The default stride is `2`, so a 320×240 camera contributes at most 19,200 points per frame: 57,600 points for three cameras or 76,800 for the four-camera `RoboTwin2_third_view` example. Use `--point-cloud-stride 1` for full resolution or a larger value for lighter recordings.
 
 Point clouds are ultimately expressed in the robot base/URDF `footprint` frame. For RoboTwin/Arx5 `unified_robot` data, dataset-world `+Y` corresponds to URDF-footprint `+X`, and the two origins are 0.65 m apart. The script therefore maps `world → footprint` as `(x, y, z) → (y + 0.65, -x, z)`: a 90-degree clockwise yaw about `+Z`, followed by a 0.65 m translation along base `+X`. This transform was recovered by matching both calibrated wrist-camera positions against their URDF forward-kinematics positions over the episode. Other robot types currently treat `world` and `footprint` as aligned. `--no-video --point-cloud` omits the 2D camera panels while retaining point-cloud decoding, and `--no-robot --point-cloud` shows the reconstructed scene without loading a URDF.
 

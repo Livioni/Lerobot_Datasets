@@ -126,6 +126,35 @@ python visualize_lerobot_rerun.py \
   --episode 0
 ```
 
+例如，下面的命令可视化 G106 新采集数据的主视角 RGB、深度预览和双臂本体
+回放，整体布局与 W2 示例保持一致。主相机默认使用
+[`calibrations/w2_demo.yaml`](calibrations/w2_demo.yaml) 中
+`observation.images.cam_high` 的内外参；数据集的
+`robot_type: agilex_piper_bimanual` 会自动选择 Agilex-Aloha：Piper 本体：
+
+```bash
+conda run --no-capture-output -n rerun python visualize_lerobot_rerun.py \
+  --root lerobot_datasets_v3.0/G106/stack_blocks_depth_lerobot \
+  --episode 0 \
+  --depth-feature observation.images.cam_high_depth \
+  --camera-calibration calibrations/G106.yaml \
+  --camera-feature observation.images.cam_high \
+  --camera-resolution 480 640
+
+python visualize_lerobot_rerun.py \
+  --root lerobot_datasets_v3.0/G106/throw_battery_into_trash_bin \
+  --episode 0 \
+  --camera-calibration calibrations/G106.yaml \
+  --camera-feature observation.images.cam_high \
+  --camera-resolution 480 640
+```
+
+`--depth-feature` 让相机网格只增加主视角深度；省略该参数会显示数据中的全部
+原生深度图。二维显示采用固定范围的压缩灰度预览，避免将全部 uint16 原始帧
+通过 Rerun gRPC 发送而阻塞查看器。检测到匹配的 RGB-D 和标定后会默认生成
+主相机彩色点云，`--point-cloud-stride` 默认值为 `2`；点云计算仍使用原始毫米
+深度，并且只会反投影具有完整内外参的相机。可用 `--no-point-cloud` 显式关闭。
+
 省略 `--dataset` 时，脚本会自动选择唯一的数据集；如果发现多个数据集，则显示交互式选择菜单。只检查数据集发现结果而不启动 Rerun：
 
 ```bash
@@ -134,36 +163,19 @@ python visualize_lerobot_rerun.py \
   --list-datasets
 ```
 
-## 无显示器时使用 Web 可视化
+## DROID 双第三人称 RGB-D 与 Franka 回放
 
-LeRobot v3/v2.1、RoboTwin TCP/预测对比和 [`robotwin_ik/visualize_ik_rerun.py`](robotwin_ik/visualize_ik_rerun.py) 在 Linux 无 X11/Wayland 显示环境时会自动使用 Web 模式。原命令无需改动，也可加 `--web` 手动启用。
+[`visualize_droid_rerun.py`](visualize_droid_rerun.py) 用于已经解包为
+`images/`、`depths/`、`intrinsic/`、`extrinsic/`、`observations/` 和
+`action/` 的 DROID episode。它在同一时间轴中显示两路第三人称 RGB/深度、
+彩色点云、Franka Panda + Robotiq 2F-85 实测关节回放，并在每路原始 RGB 旁边
+放置同一标定机位的 robot replay 视图用于对照；同时显示实测/指令 TCP 轨迹，
+以及笛卡尔、关节和夹爪的 state/action 曲线：
 
-打开终端打印的浏览器地址即可。远程运行时，先在自己的电脑执行打印的 SSH 转发命令（替换 `<user>@<server>`），同时转发 Web 和数据端口。查看期间保持可视化进程运行，按 `Ctrl+C` 停止。
-
-## Base 坐标系 RGB-D 点云
-
-传入 `--point-cloud` 后，脚本会发现兼容的 LeRobot v3 RGB-D 数据。名为 `observation.images.<camera>_depth` 的深度流会与 `observation.images.<camera>` RGB 流，以及逐帧的 `calibration.<camera>.intrinsic_matrix`、`camera_pose_matrix`（或 `extrinsic_matrix` 的逆矩阵）配对。缺少这些列时，`--camera-calibration` 会为同名相机提供静态 base→camera YAML 标定。各路点云在现有机器人三维视图中共同显示，同时保留在 `robot/scene_point_cloud` 下分别开关的能力。
-
-深度值直接从原始高位深视频解码，并使用 `meta/info.json` 中的量化参数恢复为米。RGB 与深度使用完全相同的采样行列。默认 `--point-cloud-stride 2`，因此 320×240 相机每帧最多产生 19,200 个点：三路相机合计最多 57,600 个点，`RoboTwin2_third_view` 四路相机合计最多 76,800 个点。使用 `--point-cloud-stride 1` 可恢复全分辨率，增大步长则可降低记录体积和查看器负担。
-
-点云最终以机器人 base/URDF `footprint` 为参考系。对于 RoboTwin/Arx5 的 `unified_robot` 数据，数据集 `world` 的 `+Y` 对应 URDF `footprint` 的 `+X`，并且两个原点相差 0.65 m；脚本会自动施加 `world → footprint` 变换 `(x, y, z) → (y + 0.65, -x, z)`，即绕 `+Z` 顺时针旋转 90° 后沿 base `+X` 平移 0.65 m。该变换通过逐帧匹配左右腕部相机标定位置与 URDF 正向运动学位置得到。其他机器人类型暂按 `world` 与 `footprint` 对齐处理。`--no-video --point-cloud` 会隐藏二维相机面板但继续生成点云；`--no-robot --point-cloud` 可以不加载 URDF，仅显示重建场景。
-
-RoboTwin 相机坐标、SAPIEN `world`、机器人 `reference_frame` 与 URDF `footprint` 的完整关系及矩阵推导，参见 [`docs/README_RoboTwin_Camera_Coordinates.md`](docs/README_RoboTwin_Camera_Coordinates.md)。
-
-## 机器人回放与 Embodiment 模型
-
-v3.0 可视化脚本目前识别两类状态配置：
-
-- `agilex_piper_bimanual`：每侧需要六个关节值和一个夹爪值。默认使用 `embodiments/aloha_new_description/urdf/aloha_tracer2_dabai_dark.urdf`，并依赖 `tracer2_description` 中的底盘网格。
-- `unified_robot`：使用 RoboTwin/Arx5 的 14 维状态布局。默认使用 `embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf`，显示完整底盘、轮组、相机和前后四臂。
-
-其他机器人类型仍可通过 `--no-robot` 完整查看视频和数值信号。
-
-可视化进程会将 `embodiments/` 软件包目录加入 `ROS_PACKAGE_PATH`，使 Rerun 能够解析 `package://` 网格路径。脚本不会修改原始 URDF，而是创建临时可视化副本，并仅从副本中移除碰撞模型。
-
-数据中的 `left_gripper` 和 `right_gripper` 表示两根指爪之间的总开度，单位为米。回放时会把总开度均分到两侧，使指爪保持原始尺寸并对称开合。
-
-`realsense2_description` 只供可选的 D435/D415 等 URDF 版本使用；默认 Piper Dabai 模型和默认 Arx5 模型都不依赖它。
+```bash
+conda run --no-capture-output -n rerun python visualize_droid_rerun.py \
+  '4d_datasets/droid_episodes/AUTOLab__Fri_Aug_18_11:40:54_2023'
+```
 
 ## 标定相机视角回放
 

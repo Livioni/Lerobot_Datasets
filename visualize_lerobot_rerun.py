@@ -24,7 +24,9 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from contextlib import ExitStack
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -145,6 +147,7 @@ class PointCloudCamera:
     camera_name: str
     rgb_key: str
     depth_key: str
+    depth_storage: str
     intrinsic_key: str | None
     camera_pose_key: str | None
     extrinsic_key: str | None
@@ -553,6 +556,7 @@ def discover_point_cloud_cameras(
     info: dict[str, Any],
     table: pa.Table,
     static_calibrations: Mapping[str, CameraCalibration] | None = None,
+    requested_depth_features: set[str] | None = None,
 ) -> tuple[list[PointCloudCamera], list[str]]:
     """Discover RGB-D streams with per-frame or static YAML calibration."""
     features = info.get("features", {})
@@ -563,7 +567,12 @@ def discover_point_cloud_cameras(
     issues: list[str] = []
     static_calibrations = static_calibrations or {}
     for depth_key, depth_feature in features.items():
-        if not isinstance(depth_feature, dict) or depth_feature.get("dtype") != "video":
+        if requested_depth_features and depth_key not in requested_depth_features:
+            continue
+        if not isinstance(depth_feature, dict):
+            continue
+        depth_storage = str(depth_feature.get("dtype", ""))
+        if depth_storage not in {"video", "image"}:
             continue
         depth_info = depth_feature.get("info") or {}
         if not isinstance(depth_info, dict):
@@ -625,6 +634,11 @@ def discover_point_cloud_cameras(
         height, width = depth_resolution
 
         camera_name = rgb_key.rsplit(".", 1)[-1]
+        if depth_storage == "image" and depth_key not in table.column_names:
+            issues.append(
+                f"skipping {depth_key}: embedded image column is missing from episode data"
+            )
+            continue
         calibration_prefix = f"calibration.{camera_name}"
         intrinsic_candidate = f"{calibration_prefix}.intrinsic_matrix"
         pose_candidate = f"{calibration_prefix}.camera_pose_matrix"
@@ -662,46 +676,65 @@ def discover_point_cloud_cameras(
         def depth_parameter(name: str) -> Any:
             return depth_info.get(f"video.{name}", depth_info.get(name))
 
-        raw_parameters = {
-            name: depth_parameter(name)
-            for name in ("depth_min", "depth_max", "shift", "use_log")
-        }
-        missing_parameters = [
-            name for name, value in raw_parameters.items() if value is None
-        ]
-        if missing_parameters:
-            issues.append(
-                f"skipping {depth_key}: missing depth quantization metadata "
-                + ", ".join(missing_parameters)
-            )
-            continue
-        if depth_info.get("invalid_value") is None or depth_info.get("depth_unit") is None:
-            issues.append(
-                f"skipping {depth_key}: invalid_value and depth_unit metadata are required"
-            )
-            continue
+        if depth_storage == "video":
+            raw_parameters = {
+                name: depth_parameter(name)
+                for name in ("depth_min", "depth_max", "shift", "use_log")
+            }
+            missing_parameters = [
+                name for name, value in raw_parameters.items() if value is None
+            ]
+            if missing_parameters:
+                issues.append(
+                    f"skipping {depth_key}: missing depth quantization metadata "
+                    + ", ".join(missing_parameters)
+                )
+                continue
+            if (
+                depth_info.get("invalid_value") is None
+                or depth_info.get("depth_unit") is None
+            ):
+                issues.append(
+                    f"skipping {depth_key}: invalid_value and depth_unit metadata are required"
+                )
+                continue
+            try:
+                depth_min = float(raw_parameters["depth_min"])
+                depth_max = float(raw_parameters["depth_max"])
+                depth_shift = float(raw_parameters["shift"])
+                invalid_value = float(depth_info["invalid_value"])
+            except (TypeError, ValueError):
+                issues.append(f"skipping {depth_key}: depth metadata must be numeric")
+                continue
+            depth_use_log = bool(raw_parameters["use_log"])
+        else:
+            # Native LeRobot image features retain their physical integer depth
+            # values, so they need unit conversion but no 12-bit dequantization.
+            # Zero is LeRobot's conventional invalid-depth sentinel when an
+            # exporter does not write one explicitly.
+            try:
+                invalid_value = float(depth_info.get("invalid_value", 0.0))
+            except (TypeError, ValueError):
+                issues.append(f"skipping {depth_key}: invalid_value must be numeric")
+                continue
+            depth_min = 0.0
+            depth_max = 0.0
+            depth_shift = 0.0
+            depth_use_log = False
 
-        try:
-            depth_min = float(raw_parameters["depth_min"])
-            depth_max = float(raw_parameters["depth_max"])
-            depth_shift = float(raw_parameters["shift"])
-            invalid_value = float(depth_info["invalid_value"])
-        except (TypeError, ValueError):
-            issues.append(f"skipping {depth_key}: depth metadata must be numeric")
+        if depth_info.get("depth_unit") is None:
+            issues.append(f"skipping {depth_key}: depth_unit metadata is required")
             continue
-        depth_use_log = bool(raw_parameters["use_log"])
         depth_unit = str(depth_info["depth_unit"]).lower()
         if depth_unit not in {"m", "mm"}:
             issues.append(
                 f"skipping {depth_key}: unsupported depth unit {depth_unit!r}"
             )
             continue
-        if not np.all(
-            np.isfinite([depth_min, depth_max, depth_shift, invalid_value])
-        ):
+        if not np.all(np.isfinite([depth_min, depth_max, depth_shift, invalid_value])):
             issues.append(f"skipping {depth_key}: depth metadata is not finite")
             continue
-        if depth_max <= depth_min:
+        if depth_storage == "video" and depth_max <= depth_min:
             issues.append(f"skipping {depth_key}: depth_max must exceed depth_min")
             continue
         if depth_use_log and depth_min + depth_shift <= 0.0:
@@ -715,6 +748,7 @@ def discover_point_cloud_cameras(
                 camera_name=camera_name,
                 rgb_key=rgb_key,
                 depth_key=depth_key,
+                depth_storage=depth_storage,
                 intrinsic_key=intrinsic_key,
                 camera_pose_key=camera_pose_key,
                 extrinsic_key=extrinsic_key,
@@ -777,6 +811,68 @@ def quantized_code_for_depth_value(
     return int(
         np.rint(np.clip(normalized, 0.0, 1.0) * DEPTH_QUANTIZATION_MAX)
     )
+
+
+def decode_embedded_image(
+    dataset: Path,
+    value: Any,
+    feature_key: str,
+    frame_index: int,
+) -> np.ndarray:
+    """Decode one LeRobot ``Image`` struct stored as bytes or a relative path."""
+    if isinstance(value, pa.Scalar):
+        value = value.as_py()
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{feature_key} frame {frame_index} is not an embedded image struct"
+        )
+
+    encoded = value.get("bytes")
+    image_path = value.get("path")
+    try:
+        if encoded is not None:
+            with Image.open(BytesIO(bytes(encoded))) as image:
+                return np.asarray(image).copy()
+        if image_path:
+            path = Path(str(image_path)).expanduser()
+            if not path.is_absolute():
+                path = dataset / path
+            with Image.open(path) as image:
+                return np.asarray(image).copy()
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"failed to decode {feature_key} frame {frame_index}: {error}"
+        ) from error
+    raise ValueError(f"{feature_key} frame {frame_index} has neither bytes nor path")
+
+
+def validate_native_depth_image(
+    image: np.ndarray,
+    feature_key: str,
+    frame_index: int,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """Return a numeric HxW native depth image with its physical values intact."""
+    depth = np.asarray(image)
+    if depth.shape == (height, width, 1):
+        depth = depth[..., 0]
+    if depth.shape != (height, width):
+        raise ValueError(
+            f"{feature_key} frame {frame_index} has shape {depth.shape}; "
+            f"expected {(height, width)}"
+        )
+    if not np.issubdtype(depth.dtype, np.number):
+        raise ValueError(
+            f"{feature_key} frame {frame_index} has non-numeric dtype {depth.dtype}"
+        )
+    return depth
+
+
+def native_depth_to_metres(depth: np.ndarray, unit: str) -> np.ndarray:
+    """Convert a native physical depth image to float32 metres."""
+    scale = 0.001 if unit == "mm" else 1.0
+    return np.asarray(depth, dtype=np.float32) * np.float32(scale)
 
 
 def backproject_rgbd_to_world(
@@ -1105,7 +1201,10 @@ def log_point_cloud_camera(
 ) -> None:
     """Decode, reconstruct, and log one RGB-D camera for the whole episode."""
     dataset_fps = float(info["fps"])
-    for video_key in (camera.rgb_key, camera.depth_key):
+    video_keys = [camera.rgb_key]
+    if camera.depth_storage == "video":
+        video_keys.append(camera.depth_key)
+    for video_key in video_keys:
         stream_info = info["features"][video_key].get("info") or {}
         stream_fps = stream_info.get("video.fps")
         if stream_fps is not None and not np.isclose(
@@ -1123,60 +1222,96 @@ def log_point_cloud_camera(
     rgb_source, rgb_start = episode_video_source(
         dataset, info, episode, camera.rgb_key
     )
-    depth_source, depth_start = episode_video_source(
-        dataset, info, episode, camera.depth_key
-    )
-    invalid_code = quantized_code_for_depth_value(
-        camera.invalid_value,
-        camera.depth_unit,
-        camera.depth_min,
-        camera.depth_max,
-        camera.depth_shift,
-        camera.depth_use_log,
-    )
+    depth_source: Path | None = None
+    depth_start = 0.0
+    invalid_code: int | None = None
+    if camera.depth_storage == "video":
+        depth_source, depth_start = episode_video_source(
+            dataset, info, episode, camera.depth_key
+        )
+        invalid_code = quantized_code_for_depth_value(
+            camera.invalid_value,
+            camera.depth_unit,
+            camera.depth_min,
+            camera.depth_max,
+            camera.depth_shift,
+            camera.depth_use_log,
+        )
 
     print(
         f"Generating RGB point cloud: {camera.camera_name} "
         f"({camera.width}x{camera.height}, stride {stride})..."
     )
     total_points = 0
-    with FFmpegRawVideoReader(
-        depth_source,
-        depth_start,
-        table.num_rows,
-        "gray12le",
-        (camera.height, camera.width),
-        "<u2",
-    ) as depth_reader, FFmpegRawVideoReader(
-        rgb_source,
-        rgb_start,
-        table.num_rows,
-        "rgb24",
-        (camera.height, camera.width, 3),
-        np.uint8,
-    ) as rgb_reader:
-        for frame_index, timestamp in enumerate(timestamps):
-            quantized = depth_reader.read_frame(frame_index)
-            rgb = rgb_reader.read_frame(frame_index)
-            depth_metres = dequantize_depth_codes(
-                quantized,
-                camera.depth_min,
-                camera.depth_max,
-                camera.depth_shift,
-                camera.depth_use_log,
+    with ExitStack() as readers:
+        rgb_reader = readers.enter_context(
+            FFmpegRawVideoReader(
+                rgb_source,
+                rgb_start,
+                table.num_rows,
+                "rgb24",
+                (camera.height, camera.width, 3),
+                np.uint8,
             )
+        )
+        depth_reader: FFmpegRawVideoReader | None = None
+        if depth_source is not None:
+            depth_reader = readers.enter_context(
+                FFmpegRawVideoReader(
+                    depth_source,
+                    depth_start,
+                    table.num_rows,
+                    "gray12le",
+                    (camera.height, camera.width),
+                    "<u2",
+                )
+            )
+
+        for frame_index, timestamp in enumerate(timestamps):
+            rgb = rgb_reader.read_frame(frame_index)
+            if depth_reader is not None:
+                quantized = depth_reader.read_frame(frame_index)
+                depth_metres = dequantize_depth_codes(
+                    quantized,
+                    camera.depth_min,
+                    camera.depth_max,
+                    camera.depth_shift,
+                    camera.depth_use_log,
+                )
+                assert invalid_code is not None
+                valid_mask = quantized != invalid_code
+            else:
+                native_depth = validate_native_depth_image(
+                    decode_embedded_image(
+                        dataset,
+                        table[camera.depth_key][frame_index],
+                        camera.depth_key,
+                        frame_index,
+                    ),
+                    camera.depth_key,
+                    frame_index,
+                    camera.height,
+                    camera.width,
+                )
+                depth_metres = native_depth_to_metres(
+                    native_depth, camera.depth_unit
+                )
+                valid_mask = np.isfinite(native_depth) & (
+                    native_depth != camera.invalid_value
+                )
             points, colors = backproject_rgbd_to_world(
                 depth_metres,
                 rgb,
                 intrinsics[frame_index],
                 camera_to_base[frame_index],
                 stride,
-                valid_mask=quantized != invalid_code,
+                valid_mask=valid_mask,
             )
             rr.set_time(TIMELINE, duration=float(timestamp))
             rr.log(camera.entity_path, rr.Points3D(points, colors=colors))
             total_points += len(points)
-        depth_reader.finish()
+        if depth_reader is not None:
+            depth_reader.finish()
         rgb_reader.finish()
 
     average_points = total_points / max(table.num_rows, 1)
@@ -1194,9 +1329,15 @@ def log_point_clouds(
     timestamps: np.ndarray,
     stride: int,
     static_calibrations: Mapping[str, CameraCalibration] | None = None,
+    requested_depth_features: list[str] | None = None,
 ) -> list[str]:
     """Log all compatible RGB-D streams and return their entity paths."""
-    cameras, issues = discover_point_cloud_cameras(info, table, static_calibrations)
+    cameras, issues = discover_point_cloud_cameras(
+        info,
+        table,
+        static_calibrations,
+        set(requested_depth_features or ()),
+    )
     for issue in issues:
         print(f"Warning: {issue}")
     if not cameras:
@@ -1279,6 +1420,253 @@ def extract_video_clip(
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as error:
         raise SystemExit(f"Failed to extract video clip from {source}") from error
+
+
+def native_depth_preview_range(
+    dataset: Path,
+    table: pa.Table,
+    feature_key: str,
+    height: int,
+    width: int,
+    invalid_value: float,
+) -> tuple[float, float]:
+    """Estimate a stable visualization range from sampled valid depth pixels."""
+    samples: list[np.ndarray] = []
+    for frame_index in range(table.num_rows):
+        depth = validate_native_depth_image(
+            decode_embedded_image(
+                dataset,
+                table[feature_key][frame_index],
+                feature_key,
+                frame_index,
+            ),
+            feature_key,
+            frame_index,
+            height,
+            width,
+        )
+        sampled = np.asarray(depth[::8, ::8], dtype=np.float32)
+        valid = np.isfinite(sampled) & (sampled > 0.0) & (
+            sampled != invalid_value
+        )
+        if np.any(valid):
+            samples.append(sampled[valid])
+
+    if not samples:
+        raise ValueError(f"{feature_key} contains no valid positive depth pixels")
+    values = np.concatenate(samples)
+    near, far = np.percentile(values, [1.0, 99.0])
+    if not np.isfinite(near) or not np.isfinite(far):
+        raise ValueError(f"{feature_key} has a non-finite preview range")
+    if far <= near:
+        near = float(np.min(values))
+        far = float(np.max(values))
+    if far <= near:
+        far = near + 1.0
+    return float(near), float(far)
+
+
+def encode_native_depth_preview(
+    dataset: Path,
+    table: pa.Table,
+    feature_key: str,
+    height: int,
+    width: int,
+    fps: float,
+    invalid_value: float,
+    destination: Path,
+) -> tuple[float, float]:
+    """Encode metric native depth into a compact grayscale H.264 preview."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is required for native depth visualization")
+    near, far = native_depth_preview_range(
+        dataset,
+        table,
+        feature_key,
+        height,
+        width,
+        invalid_value,
+    )
+    command = [
+        ffmpeg,
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        f"{fps:.9g}",
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-g",
+        "2",
+        "-pix_fmt",
+        "yuv420p",
+        str(destination),
+    ]
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stderr is not None
+    try:
+        for frame_index in range(table.num_rows):
+            depth = validate_native_depth_image(
+                decode_embedded_image(
+                    dataset,
+                    table[feature_key][frame_index],
+                    feature_key,
+                    frame_index,
+                ),
+                feature_key,
+                frame_index,
+                height,
+                width,
+            )
+            numeric = np.asarray(depth, dtype=np.float32)
+            valid = np.isfinite(numeric) & (numeric > 0.0) & (
+                numeric != invalid_value
+            )
+            normalized = np.clip((numeric - near) / (far - near), 0.0, 1.0)
+            preview = np.zeros((height, width), dtype=np.uint8)
+            # Near surfaces are bright; zero remains reserved for invalid pixels.
+            preview[valid] = np.rint(1.0 + 254.0 * (1.0 - normalized[valid])).astype(
+                np.uint8
+            )
+            process.stdin.write(preview.tobytes())
+        process.stdin.close()
+        error_output = process.stderr.read()
+        return_code = process.wait()
+    except Exception:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        if not process.stdin.closed:
+            process.stdin.close()
+        process.stderr.close()
+
+    if return_code != 0:
+        detail = error_output.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"ffmpeg failed to encode {feature_key} depth preview"
+            + (f": {detail}" if detail else "")
+        )
+    return near, far
+
+
+def log_embedded_depth_images(
+    dataset: Path,
+    info: dict[str, Any],
+    table: pa.Table,
+    temporary_directory: Path,
+    requested_features: list[str] | None = None,
+) -> list[tuple[str, str, bool]]:
+    """Log compact previews of native LeRobot image depth columns."""
+    features = info.get("features", {})
+    available = [
+        key
+        for key, feature in features.items()
+        if isinstance(feature, dict)
+        and feature.get("dtype") == "image"
+        and isinstance(feature.get("info"), dict)
+        and bool(feature["info"].get("is_depth_map", False))
+        and key in table.column_names
+    ]
+    selected = available
+    if requested_features:
+        missing = [key for key in requested_features if key not in available]
+        if missing:
+            choices = ", ".join(available) or "none"
+            raise SystemExit(
+                "Requested native depth feature(s) unavailable: "
+                + ", ".join(missing)
+                + f". Available: {choices}"
+            )
+        selected = list(dict.fromkeys(requested_features))
+
+    views: list[tuple[str, str, bool]] = []
+    for feature_key in selected:
+        feature = features[feature_key]
+        resolution = video_feature_resolution(feature)
+        channels = video_feature_channels(feature)
+        if resolution is None or channels != 1:
+            print(
+                f"Warning: skipping {feature_key}; expected a depth image with a "
+                "known HxW resolution and one channel"
+            )
+            continue
+        height, width = resolution
+        unit = str(feature["info"].get("depth_unit", "")).lower()
+        if unit not in {"m", "mm"}:
+            print(
+                f"Warning: skipping {feature_key}; unsupported depth unit {unit!r}"
+            )
+            continue
+
+        camera_name = safe_entity_name(feature_key.rsplit(".", 1)[-1])
+        entity_path = f"cameras/{camera_name}"
+        try:
+            invalid_value = float(feature["info"].get("invalid_value", 0.0))
+        except (TypeError, ValueError):
+            print(f"Warning: skipping {feature_key}; invalid_value must be numeric")
+            continue
+        preview_path = temporary_directory / f"{camera_name}_preview.mp4"
+        print(
+            f"Encoding native depth preview: {feature_key} "
+            f"({width}x{height}, {unit})..."
+        )
+        try:
+            near, far = encode_native_depth_preview(
+                dataset,
+                table,
+                feature_key,
+                height,
+                width,
+                float(info["fps"]),
+                invalid_value,
+                preview_path,
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            raise SystemExit(
+                f"Failed to generate depth preview for {feature_key}: {error}"
+            ) from error
+
+        video_asset = rr.AssetVideo(path=preview_path)
+        frame_timestamps_ns = video_asset.read_frame_timestamps_nanos()
+        rr.log(entity_path, video_asset, static=True)
+        rr.send_columns(
+            entity_path,
+            indexes=[
+                rr.TimeColumn(
+                    TIMELINE,
+                    duration=np.asarray(frame_timestamps_ns, dtype=np.float64) * 1e-9,
+                )
+            ],
+            columns=rr.VideoFrameReference.columns_nanos(frame_timestamps_ns),
+        )
+        display_name = f"{camera_name} ({near:.0f}-{far:.0f} {unit})"
+        views.append((display_name, entity_path, True))
+        print(
+            f"Loaded compressed depth preview: {feature_key} "
+            f"({table.num_rows} frames, display range {near:.0f}-{far:.0f} {unit})"
+        )
+    return views
 
 
 def log_videos(
@@ -2416,16 +2804,25 @@ def make_blueprint(
             )
 
         if rgb_views or depth_views:
-            camera_rows: list[Any] = []
-            if rgb_views:
-                camera_rows.append(rrb.Grid(*rgb_views, name="RGB"))
-            if depth_views:
-                camera_rows.append(rrb.Grid(*depth_views, name="Depth"))
-            camera_area: Any = (
-                rrb.Vertical(*camera_rows, name="Cameras")
-                if len(camera_rows) > 1
-                else camera_rows[0]
-            )
+            if len(depth_views) == 1:
+                # Keep the compact W2 layout: one selected depth stream becomes
+                # a fourth camera tile instead of creating a second stacked row.
+                camera_area: Any = rrb.Grid(
+                    *all_camera_views,
+                    grid_columns=2,
+                    name="Cameras",
+                )
+            else:
+                camera_rows: list[Any] = []
+                if rgb_views:
+                    camera_rows.append(rrb.Grid(*rgb_views, name="RGB"))
+                if depth_views:
+                    camera_rows.append(rrb.Grid(*depth_views, name="Depth"))
+                camera_area = (
+                    rrb.Vertical(*camera_rows, name="Cameras")
+                    if len(camera_rows) > 1
+                    else camera_rows[0]
+                )
             top_area: Any = rrb.Horizontal(
                 robot_area,
                 camera_area,
@@ -2508,12 +2905,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-video",
         action="store_true",
-        help="Do not add 2D video views (point-cloud decoding remains available)",
+        help="Do not add 2D video/image views (point-cloud decoding remains available)",
+    )
+    parser.add_argument(
+        "--depth-feature",
+        action="append",
+        help=(
+            "Native LeRobot image depth feature to display and reconstruct; "
+            "repeat for multiple features (all native depth image features are "
+            "shown when omitted)"
+        ),
     )
     parser.add_argument(
         "--point-cloud",
-        action="store_true",
-        help="Reconstruct paired RGB-D streams in the dataset world/base frame",
+        action=argparse.BooleanOptionalAction,
+        default="auto",
+        help=(
+            "Reconstruct paired RGB-D streams in the dataset world/base frame; "
+            "auto enables for datasets with compatible depth and calibration"
+        ),
     )
     parser.add_argument(
         "--point-cloud-stride",
@@ -2613,6 +3023,24 @@ def main() -> None:
         if calibrated_camera is not None
         else None
     )
+    point_cloud_enabled: bool
+    if args.point_cloud == "auto":
+        auto_point_cloud_cameras, _auto_point_cloud_issues = (
+            discover_point_cloud_cameras(
+                info,
+                table,
+                point_cloud_calibrations,
+                set(args.depth_feature or ()),
+            )
+        )
+        point_cloud_enabled = bool(auto_point_cloud_cameras)
+        if point_cloud_enabled:
+            print(
+                "Automatically enabled colored point cloud "
+                f"(stride {args.point_cloud_stride})."
+            )
+    else:
+        point_cloud_enabled = bool(args.point_cloud)
 
     timestamps = np.asarray(table["timestamp"].to_numpy(), dtype=np.float64)
     timestamps -= timestamps[0]
@@ -2636,6 +3064,15 @@ def main() -> None:
         video_views: list[tuple[str, str, bool]] = []
         if not args.no_video:
             video_views = log_videos(dataset, info, episode, temporary_directory)
+            video_views.extend(
+                log_embedded_depth_images(
+                    dataset,
+                    info,
+                    table,
+                    temporary_directory,
+                    args.depth_feature,
+                )
+            )
         robot_replay = maybe_log_robot_replay(
             args,
             info,
@@ -2646,7 +3083,7 @@ def main() -> None:
             script_root,
         )
         point_cloud_paths: list[str] = []
-        if args.point_cloud:
+        if point_cloud_enabled:
             if not robot_replay:
                 log_robot_footprint_frame()
             point_cloud_paths = log_point_clouds(
@@ -2657,6 +3094,7 @@ def main() -> None:
                 timestamps,
                 args.point_cloud_stride,
                 point_cloud_calibrations,
+                args.depth_feature,
             )
         if calibrated_camera is not None:
             if not robot_replay:
