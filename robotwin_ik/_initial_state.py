@@ -22,7 +22,16 @@ BUILTIN_INITIAL_JOINTS = {
         (0., 0.19634954631328583, 0., -2.6179938316345215, 0.,
          2.9415926933288574, 0.7853981852531433)),
     'ARX-X5': _both_arms(tuple(f'joint{i}' for i in range(1, 7)), (0.,) * 6),
-    'piper': _both_arms(tuple(f'joint{i}' for i in range(1, 7)), (0.,) * 6),
+    'piper': {
+    'left': dict(zip(
+        (f'joint{i}' for i in range(1, 7)),
+        (0., 0., 0., 0., 0., 0.),  # 替换为左臂角度
+    )),
+    'right': dict(zip(
+        (f'joint{i}' for i in range(1, 7)),
+        (0., 0., 0., 0., 0., 0.),  # 替换为右臂角度
+    )),
+    },
     'ur5-wsg': _both_arms(
         ('shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
          'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'),

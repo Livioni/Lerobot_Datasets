@@ -24,9 +24,24 @@ Aloha 的双臂 ARX5 与单臂 ARX-X5 使用不同配置。根目录 `solve_robo
 conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_arx_x5.py \
   4d_datasets/beat_block_hammer/episode_0000000
 
+conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_franka_panda.py \
+  4d_datasets/beat_block_hammer/episode_0000000
+
+conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_piper.py \
+  4d_datasets/beat_block_hammer/episode_0000000
+
+conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_ur5_wsg.py \
+  4d_datasets/beat_block_hammer/episode_0000000
+
 conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
   4d_datasets/beat_block_hammer/episode_0000000 \
   --ik-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/arx_x5
+
+conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
+  4d_datasets/place_dual_shoes/episode_0000092 \
+  --ik-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/franka_panda \
+  --show-candidate
+
 ```
 
 Linux 无 X11/Wayland 显示环境时自动启动 Web 查看器，也可加 `--web` 手动启用。远程运行时，在自己的电脑执行终端打印的 SSH 端口转发命令，再打开打印的浏览器地址。查看期间保持进程运行，按 `Ctrl+C` 退出。
@@ -91,3 +106,21 @@ python -m robotwin_ik.tests.validate_saved_outputs /path/to/trajectory_results
 ```
 
 历史整段验证结果见 [`trajectory_validation_results.json`](trajectory_validation_results.json)，其中失败候选不计为成功轨迹。
+
+## 查看求解器内置初态（五款本体）
+
+直接读取 `_initial_state.py` 的 `BUILTIN_INITIAL_JOINTS`，不需要 episode 或 CUDA；这与 `config.yml` 的 `homestate` 不同。默认在独立标签页展示五款本体的双臂初态、关节角（rad/deg）、基座和闭合 TCP 坐标。
+
+```bash
+conda run --no-capture-output -n rerun python robotwin_ik/visualize_initial_states_rerun.py
+
+# 只看 Piper；也可选择 franka-panda、ARX-X5、ur5-wsg、aloha-agilex
+conda run --no-capture-output -n rerun python robotwin_ik/visualize_initial_states_rerun.py --robot piper
+
+# 导出全部初态
+conda run --no-capture-output -n rerun python robotwin_ik/visualize_initial_states_rerun.py --output /tmp/robotwin_initial_states.rrd
+```
+
+支持 `--arm left|right|both`、`--gripper-open 0..1`、`--embodiment-distance 0.6`（Aloha 不使用该间距）和 `--embodiments-root`。基座变换来自当前本体配置；夹爪默认使用内置初态的开度。初态是求解种子和首帧软偏好，不是强制的输出第一帧，也不表示已经通过碰撞检查。
+
+无图形显示环境自动启动 Web viewer，也可显式加 `--web`。远程访问须按终端提示同时转发网页和数据两个端口。修改 `_initial_state.py` 后重新运行即可查看最新初态。
