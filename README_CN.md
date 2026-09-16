@@ -142,7 +142,7 @@ conda run --no-capture-output -n rerun python visualize_lerobot_rerun.py \
   --camera-resolution 480 640
 
 python visualize_lerobot_rerun.py \
-  --root lerobot_datasets_v3.0/G106/throw_battery_into_trash_bin \
+  --root  lerobot_datasets_v3.0/G106/drop_bin_lerobot_depth \
   --episode 0 \
   --camera-calibration calibrations/G106.yaml \
   --camera-feature observation.images.cam_high \
