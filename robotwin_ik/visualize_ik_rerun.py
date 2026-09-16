@@ -2,6 +2,7 @@
 """Replay a target embodiment and compare its closed TCP with predictions."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -78,6 +79,31 @@ def load_replay(ik_dir, embodiments_root=DEFAULT_EMBODIMENTS_ROOT, show_candidat
     return meta, state, urdf.load_robot_model(str(path))
 
 
+def prepare_collada(source, directory):
+    """Replace malformed texture references only in a temporary mesh copy."""
+    ns = {'c': 'http://www.collada.org/2005/11/COLLADASchema'}
+    tree = ET.parse(source)
+    changed = False
+    for parent in tree.iter():
+        for texture in list(parent.findall('c:texture', ns)):
+            if not texture.get('texcoord'):
+                # These exports have no usable UV binding. Inventing a texcoord
+                # name would hide the parse error without repairing the material.
+                parent.remove(texture)
+                ET.SubElement(parent, f"{{{ns['c']}}}color").text = '0.5 0.5 0.5 1'
+                changed = True
+    if not changed:
+        return source
+    # Relocation must not break any other, valid image references in this mesh.
+    for image in tree.findall('.//c:library_images/c:image/c:init_from', ns):
+        if image.text and not image.text.startswith(('/', '#')) and '://' not in image.text:
+            image.text = (source.parent / image.text).resolve().as_uri()
+    key = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:16]
+    output = directory / f'{source.stem}_{key}.dae'
+    tree.write(output, encoding='utf-8', xml_declaration=True)
+    return output
+
+
 def prepare_visual(source, destination, name, side=None):
     """Only alter a temporary visualization copy; preserve all kinematics."""
     tree = ET.parse(source)
@@ -100,6 +126,7 @@ def prepare_visual(source, destination, name, side=None):
                     if key not in limits[0].attrib:
                         limits[0].set(key, value)
                 joint.remove(extra)
+    prepared_meshes = {}
     for link in tree.getroot().findall('link'):
         for collision in list(link.findall('collision')):
             link.remove(collision)
@@ -110,6 +137,10 @@ def prepare_visual(source, destination, name, side=None):
             if not filename.startswith(('/', 'package://')):
                 filename = str((source.parent / filename).resolve())
             mesh.set('filename', filename)
+            if Path(filename).suffix.lower() == '.dae' and not filename.startswith('package://'):
+                if filename not in prepared_meshes:
+                    prepared_meshes[filename] = prepare_collada(Path(filename), destination.parent)
+                mesh.set('filename', str(prepared_meshes[filename]))
             if name == 'franka-panda' and link.get('name') == 'camera' and Path(filename).name == 'd435.dae':
                 # Rerun's DAE import ignores COLLADA's millimeter unit. Make
                 # the unit explicit in URDF, leaving mount origins in meters.

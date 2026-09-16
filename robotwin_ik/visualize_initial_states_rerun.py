@@ -19,7 +19,13 @@ from robotwin_ik._embodiments import DEFAULT_EMBODIMENTS_ROOT, load_embodiment
 from robotwin_ik._initial_state import BUILTIN_INITIAL_JOINTS, load_initial_state
 from robotwin_ik._kinematics import fk_link, gripper_positions, joint_matrix
 from robotwin_ik.visualize_ik_rerun import COLORS, prepare_visual
-from robotwin_ik.visualize_franka_homestate_rerun import openness
+
+
+def openness(value: str) -> float:
+    parsed = float(value)
+    if not np.isfinite(parsed) or not 0 <= parsed <= 1:
+        raise argparse.ArgumentTypeError('Gripper openness must be between 0 (closed) and 1 (open)')
+    return parsed
 
 
 def parse_args(argv=None):

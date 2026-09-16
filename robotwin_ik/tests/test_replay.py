@@ -5,11 +5,50 @@ import unittest
 import xml.etree.ElementTree as ET
 import numpy as np
 from robotwin_ik._embodiments import NAMES, load_embodiment
-from robotwin_ik.visualize_ik_rerun import prepare_visual
+from robotwin_ik.visualize_ik_rerun import prepare_visual, prepare_collada
+from robotwin_ik._aloha import DEFAULT_URDF
 import convert_robotwin_tcp as tc
 
 
 class ReplayTests(unittest.TestCase):
+    def test_aloha_collada_materials_preserve_geometry(self):
+        ns = {'c': 'http://www.collada.org/2005/11/COLLADASchema'}
+        original = ET.parse(DEFAULT_URDF)
+        original_meshes = {
+            link.get('name'): (DEFAULT_URDF.parent / link.find('./visual/geometry/mesh').get('filename')).resolve()
+            for link in original.findall('link') if link.find('./visual/geometry/mesh') is not None
+        }
+        repaired = set()
+        with tempfile.TemporaryDirectory() as temporary:
+            for side in ('left', 'right'):
+                prepared = Path(temporary) / f'{side}.urdf'
+                prepare_visual(DEFAULT_URDF, prepared, 'aloha-agilex', side)
+                self.assertEqual(tc.load_robot_model(str(prepared)).joints_by_name,
+                                 tc.load_robot_model(str(DEFAULT_URDF)).joints_by_name)
+                for link in ET.parse(prepared).findall('link'):
+                    for mesh in link.findall('./visual/geometry/mesh'):
+                        path = Path(mesh.get('filename'))
+                        if path.suffix.lower() != '.dae':
+                            continue
+                        source = original_meshes[link.get('name')]
+                        before = source.read_bytes()
+                        output = ET.parse(path)
+                        self.assertTrue(all(t.get('texcoord') for t in output.findall('.//c:texture', ns)))
+                        if path != source:
+                            repaired.add(source)
+                            for tag in ('library_geometries', 'library_visual_scenes', 'asset'):
+                                self.assertEqual(ET.tostring(output.find(f'c:{tag}', ns)),
+                                                 ET.tostring(ET.parse(source).find(f'c:{tag}', ns)))
+                        self.assertEqual(source.read_bytes(), before)
+            self.assertGreater(len(repaired), 0)
+
+    def test_valid_collada_is_not_rewritten(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'valid.dae'
+            source.write_text('<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema">'
+                              '<texture texture="sampler" texcoord="UVMap"/></COLLADA>')
+            self.assertEqual(prepare_collada(source, Path(temporary)), source)
+
     def test_visual_copy_preserves_joints_and_loads(self):
         try:
             import rerun as rr
