@@ -34,8 +34,10 @@ def parse_args(name, argv=None):
         parser.add_argument('--task-config', type=Path)
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--device', default='cuda:0')
+    parser.add_argument('--solver', choices=('trajectory', 'differential'), default='trajectory',
+                        help='Whole-trajectory search or sequential cuRobo 2 LM differential IK')
     parser.add_argument('--ik-seeds', type=positive_seed_count, default=64,
-                        help='Initial IK seeds per TCP frame; disconnected searches expand up to 256')
+                        help='Trajectory: initial seeds (expands to 256); differential: recovery LM seeds')
     parser.add_argument('--max-joint-step-rad', type=float, default=.5,
                         help='Positive hard limit on actual per-joint changes between trajectory frames')
     parser.add_argument('--overwrite', action='store_true')
@@ -64,7 +66,8 @@ def main(name, argv=None):
     if not episode.is_dir():
         raise SystemExit(f'Episode not found: {episode}')
     prediction_path = (args.prediction_json or episode / 'tcp_episode.json').expanduser().resolve()
-    default_output = episode / 'TCP_prediction_ik'
+    default_output = episode / ('TCP_prediction_differential_ik'
+                                if args.solver == 'differential' else 'TCP_prediction_ik')
     if name != 'aloha-agilex':
         default_output /= slug(name)
     output = (args.output_dir or default_output).expanduser().resolve()
@@ -92,19 +95,25 @@ def main(name, argv=None):
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
     stages = {'input_preparation': time.perf_counter()-started}
-    print(f'{name}: whole trajectory, {count} frames, joint step <= {args.max_joint_step_rad:g} rad', flush=True)
+    print(f'{name}: {args.solver}, {count} frames, joint step <= {args.max_joint_step_rad:g} rad', flush=True)
     outputs, diagnostics, summaries, arms = {}, {}, {}, {}
     columns, offset = [], 0
     try:
         stamp = time.perf_counter()
-        runtime = CuroboRuntime(args.device)
+        if args.solver == 'differential':
+            from ._differential import DifferentialRuntime, solve_arm_differential
+            runtime = DifferentialRuntime(args.device)
+            arm_solver = solve_arm_differential
+        else:
+            runtime = CuroboRuntime(args.device)
+            arm_solver = solve_arm
         stages['runtime_initialization'] = time.perf_counter()-stamp
         np.random.seed(RANDOM_SEED)
         runtime.torch.manual_seed(RANDOM_SEED)
         runtime.torch.cuda.manual_seed_all(RANDOM_SEED)
         for side, geometry in robot.geometries.items():
             stamp = time.perf_counter()
-            outputs[side], diagnostics[side], summaries[side] = solve_arm(
+            outputs[side], diagnostics[side], summaries[side] = arm_solver(
                 runtime, configs[side], geometry, robot.model, *targets[side],
                 initial[side], prediction.timestamps, args.ik_seeds, args.max_joint_step_rad)
             stages[f'{side}_arm'] = time.perf_counter()-stamp
@@ -168,6 +177,19 @@ def main(name, argv=None):
                         'torch_cuda': runtime.torch.version.cuda, 'curobo': package_version('curobo', runtime.curobo),
                         'gpu': runtime.torch.cuda.get_device_name(runtime.device)},
     }
+    if args.solver == 'differential':
+        settings = metadata['solver']
+        settings.update(type='curobo_lm_offline_tracking_with_recovery', ik_seeds=1,
+                        recovery_seeds=args.ik_seeds, lm_max_iterations=128,
+                        initial_state_role='sequential_tracking_initial_state',
+                        velocity_and_acceleration='diagnostics_only_no_controller_dt_clamping',
+                        seed_position_weight=1., seed_orientation_weight=1.,
+                        seed_velocity_weight=0., seed_acceleration_weight=0.,
+                        initialization='previous_frame_with_multiseed_LM_recovery',
+                        dt_source='original_timestamp_intervals_for_diagnostics',
+                        main_optimizer_enabled=False)
+        for key in ('maximum_ik_seeds', 'maximum_initial_paths'):
+            settings.pop(key)
     report = {'schema_version': 3, 'summary': {'status': status, 'frame_count': count, 'counts': counts,
               'failed_frames': failures, 'total_wall_time_seconds': elapsed}, 'arms': summaries,
               'frames': [{'frame_index': i, 'time_seconds': prediction.timestamps[i],
@@ -178,5 +200,9 @@ def main(name, argv=None):
     for side in arms:
         maximum = max((f['joint_step_max_abs_rad'] or 0 for f in diagnostics[side]), default=0.)
         print(f'  {side}: {counts[side]}, maximum joint step={maximum:.6f} rad', flush=True)
+        if args.solver == 'differential':
+            matched = summaries[side]['tcp_tracking_success']
+            reasons = sorted({r for f in diagnostics[side] for r in f['failure_reasons']})
+            print(f'    TCP within tolerance: {matched}/{count}; failure reasons: {reasons}', flush=True)
     if status != 'success':
         raise SystemExit(1)

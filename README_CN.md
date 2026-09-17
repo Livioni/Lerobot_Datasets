@@ -227,21 +227,30 @@ p_camera = T_camera_base @ p_base
 
 ## 逆运动学求解与可视化
 
+求解使用已安装新版 cuRobo 的 `curobo` Conda 环境，并显式指定 `--solver differential`，无需设置 `PYTHONPATH`。以下求解示例通过 `--output-dir` 保留原结果目录，便于继续使用现有可视化命令。
+
 将预测 TCP 转为指定本体的整段关节轨迹，再直接查看机器人、目标与实际 TCP、RGB/点云和误差曲线。支持 Franka Panda、ARX-X5、Piper、UR5-WSG 和 Aloha-Agilex，完整参数与验收条件见 [`robotwin_ik/README.md`](robotwin_ik/README.md)。
 
 ```bash
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_arx_x5.py \
-  4d_datasets/beat_block_hammer/episode_0000000
+conda run --no-capture-output -n curobo python robotwin_ik/solve_arx_x5.py \
+  4d_datasets/beat_block_hammer/episode_0000000 --solver differential \
+  --output-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/arx_x5
+
+conda run --no-capture-output -n curobo python robotwin_ik/solve_franka_panda.py \
+  4d_datasets/place_dual_shoes/episode_0000092 --solver differential \
+  --output-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/franka_panda
 
 conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
-  4d_datasets/beat_block_hammer/episode_0000000 \
-  --ik-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/arx_x5
+  4d_datasets/place_dual_shoes/episode_0000092 \
+  --ik-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/piper \
+  --show-candidate
 ```
 
 ur5-wsg
 ```bash
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_ur5_wsg.py \
-  4d_datasets/place_dual_shoes/episode_0000092
+conda run --no-capture-output -n curobo python robotwin_ik/solve_ur5_wsg.py \
+  4d_datasets/place_dual_shoes/episode_0000092 --solver differential \
+  --output-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/ur5_wsg
 
 conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
   4d_datasets/place_dual_shoes/episode_0000092 \

@@ -149,14 +149,18 @@ def _valid_configs(runtime, validator, q, canonical_names):
     return validator.check_valid(_tensor(runtime, q[:, order])).detach().cpu().numpy().reshape(-1).astype(bool)
 
 
-def evaluate_trajectory(runtime, validator, geometry, model, q, targets, timestamps, step_limit):
+def evaluate_trajectory(runtime, validator, geometry, model, q, targets, timestamps, step_limit,
+                        constraint_feasible=None):
     """Validate the exact float32 payload; do not rely on optimizer success flags."""
     q = np.asarray(q, dtype=np.float32).astype(float)
     if not np.isfinite(q).all():
         raise ValueError('Trajectory contains nonfinite values')
     lower, upper = joint_bounds(model, geometry.canonical_joint_names)
     positions, rotations = pose_residuals(model, geometry, q, targets)
-    feasible = _valid_configs(runtime, validator, q, geometry.canonical_joint_names)
+    feasible = (_valid_configs(runtime, validator, q, geometry.canonical_joint_names)
+                if constraint_feasible is None else np.asarray(constraint_feasible, dtype=bool))
+    if feasible.shape != (len(q),):
+        raise ValueError("Constraint feasibility must have one entry per frame")
     bounds = np.all((q >= lower) & (q <= upper), axis=1)
     steps, velocity, acceleration = motion_metrics(q, timestamps)
     frames = []

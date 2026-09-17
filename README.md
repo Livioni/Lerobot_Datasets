@@ -240,3 +240,15 @@ p_camera = T_camera_base @ p_base
 It maps points from the robot `footprint` frame into the OpenCV camera frame (`+X` right, `+Y` down, `+Z` forward). The script inverts this transform to recover the camera pose in the base frame. Rerun names the calibrated replay tab after the camera feature and keeps the free-view `Robot replay` tab for comparison.
 
 `--camera-resolution` uses `HEIGHT WIDTH` order. If a calibration file contains exactly one camera, `--camera-feature` is inferred automatically.
+
+## TCP inverse kinematics
+
+Use the `curobo` Conda environment for the five RoboTwin embodiment solvers, with `--solver differential`. The local cuRobo source is installed in that environment, so `PYTHONPATH` is unnecessary:
+
+```bash
+conda run --no-capture-output -n curobo python robotwin_ik/solve_piper.py \
+  4d_datasets/beat_block_hammer/episode_0000000 --solver differential \
+  --output-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/piper
+```
+
+This explicit output directory preserves the paths used by existing viewer commands. Without `--output-dir`, Differential IK writes to `TCP_prediction_differential_ik/<embodiment>` (directly to `TCP_prediction_differential_ik` for Aloha). The viewer continues to use the `rerun` environment; rendering and other scripts keep their existing commands. See [the IK guide](robotwin_ik/README.md) for all embodiments and validation criteria.

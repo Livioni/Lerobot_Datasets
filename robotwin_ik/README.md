@@ -4,9 +4,9 @@
 
 ## 环境与入口
 
-从仓库根目录运行。求解使用 `RoboTwin` Conda 环境，需要兼容 cuRobo、CUDA PyTorch、NumPy 和 PyYAML；可视化使用 `rerun` 环境，需要 Rerun SDK 0.35.0、NumPy、PyYAML 和 Pillow。`--help` 不加载 CUDA 或 Rerun。
+从仓库根目录运行。以下求解示例使用 `curobo` Conda 环境和 `--solver differential`，需要新版 cuRobo、CUDA PyTorch、NumPy 和 PyYAML；可视化使用 `rerun` 环境，需要 Rerun SDK 0.35.0、NumPy、PyYAML 和 Pillow。`--help` 不加载 CUDA 或 Rerun。
 
-| 本体 | 求解脚本（位于 `robotwin_ik/`） | 动作形状 | 默认结果目录（相对 episode） |
+| 本体 | 求解脚本（位于 `robotwin_ik/`） | 动作形状 | 下方配套示例结果目录（通过 `--output-dir` 指定，相对 episode） |
 | --- | --- | --- | --- |
 | Franka Panda | `solve_franka_panda.py` | `[T,16]` | `TCP_prediction_ik/franka_panda` |
 | ARX-X5 | `solve_arx_x5.py` | `[T,14]` | `TCP_prediction_ik/arx_x5` |
@@ -16,26 +16,56 @@
 
 Aloha 的双臂 ARX5 与单臂 ARX-X5 使用不同配置。根目录 `solve_robotwin_tcp_curobo_ik.py` 保留 Aloha 兼容入口。
 
-## 求解并直接可视化
+## 使用 cuRobo Differential IK
 
-以 ARX-X5 为例，其他本体替换脚本名和 `--ik-dir` 最后一段即可：
+五个求解入口均支持 `--solver differential`。该模式使用 cuRobo 2 的 LM seed solver 做离线逐帧收敛，以上一帧关节位置作为初值。每帧先执行最多 128 次 LM 数值迭代；如果 TCP、模型约束或关节步长未通过，再尝试多个 LM 初值，并优先选择满足约束且接近上一帧的解。不执行 LBFGS；失败恢复会搜索其他关节分支，因此不保证始终保持同一分支。
+
+当前机器已创建独立的 `curobo` Conda 环境，安装 Python 3.10、PyTorch 2.9.1（CUDA 12.8）、cuda-core 1.2.0、cuda-bindings 12.9.7、Warp 1.17.0 和数据读取依赖。仓库内新版 cuRobo 已通过 editable 模式安装，无需设置 `PYTHONPATH`。从仓库根目录运行：
 
 ```bash
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_arx_x5.py \
-  4d_datasets/beat_block_hammer/episode_0000000
+conda run --no-capture-output -n curobo python robotwin_ik/solve_piper.py \
+  4d_datasets/beat_block_hammer/episode_0000000 --solver differential
+```
 
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_franka_panda.py \
-  4d_datasets/beat_block_hammer/episode_0000000
+替换脚本名即可求解 Franka、ARX-X5、UR5-WSG 或 Aloha。默认输出到 `<episode>/TCP_prediction_differential_ik/<本体>`；Aloha 直接输出到 `TCP_prediction_differential_ik`。state 列顺序、夹爪命令和可视化格式与原模式相同。查看时将 `--ik-dir` 指向新目录；失败候选需加 `--show-candidate`。
 
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_piper.py \
-  4d_datasets/beat_block_hammer/episode_0000000
+初态来自现有内置值或 `--initial-state-hdf5`，首帧直接求解首个 TCP，不要求机器人在一个采样间隔内从初态运动到目标。常规跟踪使用单初值，失败恢复使用 `--ik-seeds` 个初值（默认 64）。位置/朝向/速度/加速度的 LM 权重分别为 1、1、0、0，并记录在 metadata 中。原时间戳保留用于输出和速度、加速度诊断，不作为 LM 单步速度裁剪的控制周期；这适用于离线 state 转换，不代表原采样时间下已满足动力学限制。
 
-conda run --no-capture-output -n RoboTwin python robotwin_ik/solve_ur5_wsg.py \
-  4d_datasets/beat_block_hammer/episode_0000000
+局部极值、奇异位形以及不同本体的可达空间和关节限位仍可能导致求解失败；多初值恢复失败不证明目标无解。每帧仍检查 3 mm / 2° TCP 容差、关节限位、自碰撞和相邻输出关节变化；`--max-joint-step-rad` 是最终验收阈值，不对求解结果做裁剪。LM 路径不执行碰撞避障优化，碰撞由最终模型约束检查判定。内置初态本身不保证无碰撞。
+
+未通过的有限候选仍作为下一帧的诊断初态，整段只保存 `robot_state_candidate.npy` 并退出 1；不会将未收敛状态标记为成功。此模式的恢复仍使用 LM，不会切换到旧版全轨迹求解器。每帧 `tcp_tracking_success` 单独表示 TCP 是否在容差内；`violated_model_constraints` 区分关节空间约束（`cspace`）与自碰撞（`self_collision`），最终 `success` 还要求步长等检查全部通过。脚本默认仍为 `--solver trajectory`，该旧版后端依赖原 `RoboTwin` 环境；在新版 `curobo` 环境中必须显式指定 `--solver differential`。
+
+新版 GPU 回归测试：
+
+```bash
+ROBOTWIN_DIFFERENTIAL_GPU_TESTS=1 conda run --no-capture-output -n curobo \
+  python -m unittest robotwin_ik.tests.test_differential -v
+```
+
+## 求解并直接可视化
+
+以下求解命令显式指定 `--output-dir`，将结果写入原 `TCP_prediction_ik` 目录，因此现有可视化命令可继续使用。以 ARX-X5 为例，其他本体替换脚本名和 `--ik-dir` 最后一段即可：
+
+```bash
+conda run --no-capture-output -n curobo python robotwin_ik/solve_arx_x5.py \
+  4d_datasets/beat_block_hammer/episode_0000000 --solver differential \
+  --output-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/arx_x5 --overwrite
+
+conda run --no-capture-output -n curobo python robotwin_ik/solve_franka_panda.py \
+  4d_datasets/beat_block_hammer/episode_0000000 --solver differential \
+  --output-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/franka_panda
+
+conda run --no-capture-output -n curobo python robotwin_ik/solve_piper.py \
+  4d_datasets/place_dual_shoes/episode_0000092 --solver differential \
+  --output-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/piper --overwrite
+
+conda run --no-capture-output -n curobo python robotwin_ik/solve_ur5_wsg.py \
+  4d_datasets/beat_block_hammer/episode_0000000 --solver differential \
+  --output-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/ur5_wsg
 
 conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
-  4d_datasets/beat_block_hammer/episode_0000000 \
-  --ik-dir 4d_datasets/beat_block_hammer/episode_0000000/TCP_prediction_ik/arx_x5
+  4d_datasets/place_dual_shoes/episode_0000092 \
+  --ik-dir 4d_datasets/place_dual_shoes/episode_0000092/TCP_prediction_ik/arx_x5 --show-candidate
 
 conda run --no-capture-output -n rerun python robotwin_ik/visualize_ik_rerun.py \
   4d_datasets/place_dual_shoes/episode_0000092 \
@@ -61,15 +91,15 @@ Linux 无 X11/Wayland 显示环境时自动启动 Web 查看器，也可加 `--w
 
 模型资源默认从本仓库 `embodiments/RobotTwin_embodiments/` 加载，可通过 `--embodiments-root` 修改。基座间距优先级为 `--embodiment-distance` > `--task-config` 中第三项 > 0.6 米。双单臂配置示例：`embodiment: [franka-panda, franka-panda, 0.6]`。基座高度和朝向来自各本体配置；修改配置后需要重新求解，可视化使用结果中记录的变换。
 
-求解流程为整段候选搜索、动态规划选择关节分支、联合优化所有帧。最终 float32 轨迹须满足：
+本文命令使用 Differential IK 顺序跟踪 TCP。旧版 `trajectory` 后端使用整段候选搜索、动态规划选择关节分支、联合优化所有帧。最终 float32 轨迹须满足：
 
 - TCP 位置误差 ≤3 mm，朝向误差 ≤2°。
 - 关节限位和单臂自碰撞检查通过。
 - 相邻帧单关节变化 ≤0.5 rad，可用正数 `--max-joint-step-rad` 调整。
 
-速度和加速度参与平滑优化，但不设硬上限；检查范围不包含桌面、跨臂碰撞或采样帧之间的碰撞。有限搜索失败不证明轨迹无解。
+旧版 `trajectory` 的速度和加速度参与平滑优化；当前离线 Differential IK 只报告速度和加速度诊断，不设硬上限；检查范围不包含桌面、跨臂碰撞或采样帧之间的碰撞。有限搜索失败不证明轨迹无解。
 
-常用求解参数：`--prediction-json`、`--device cuda:0`、`--ik-seeds 64`、`--output-dir` 和 `--overwrite`。默认初态来自 `_initial_state.py` 的本体样例首帧，仅用于搜索和首帧软偏好，不固定首帧输出，也不读取源 episode 的关节状态。可用 `--initial-state-hdf5` 覆盖初态，此时额外需要 h5py。
+常用求解参数：`--solver differential`、`--prediction-json`、`--device cuda:0`、`--output-dir` 和 `--overwrite`；`--ik-seeds 64` 在 Differential IK 中控制失败恢复初值数，在旧版 `trajectory` 中控制初始搜索种子数。默认初态来自 `_initial_state.py` 的本体样例首帧，在 Differential IK 中作为顺序跟踪初态，在旧版后端中用于搜索和首帧软偏好；不固定首帧输出，也不读取源 episode 的关节状态。可用 `--initial-state-hdf5` 覆盖初态，此时额外需要 h5py。
 
 闭合 TCP 标定见 [`tcp_calibrations.yml`](tcp_calibrations.yml)，包含指尖接触面偏移和资源校验值。模型或标定资源变化后需重新标定。
 
